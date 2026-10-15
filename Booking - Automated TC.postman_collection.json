@@ -1,0 +1,850 @@
+{
+  "info": {
+    "_postman_id": "a1760d97-f052-4d2c-bd8c-9fe39af9ec36",
+    "name": "Booking - Automated TC",
+    "description": "Автоматизация 70 тест-кейсов из файла Booking Tests.xlsx для API restful-booker (https://restful-booker.herokuapp.com/apidoc/index.html).\n\nАрхитектура:\n- Общие хелперы (генерация случайных данных, получение токена, создание booking) продублированы в начале Pre-request Script и Tests script каждого запроса, которому они нужны. Это сделано потому, что Postman выполняет Pre-request и Tests как отдельные изолированные песочницы: обычные JS-функции/переменные между ними не сохраняются (в отличие от pm.variables и pm.collectionVariables).\n- Все тест-кейсы одного эндпоинта собраны в вкладке Tests соответствующего запроса.\n- Там, где по условиям кейса нужен токен или отдельная запись booking, они запрашиваются/создаются заново для каждого теста (независимость тестов).\n- Request body генерируется динамически (см. Pre-request Script каждого запроса и хелпер buildBookingObject).\n\nТребования: Postman v10+ с поддержкой async/await и Promise у pm.sendRequest.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "27376561"
+  },
+  "item": [
+    {
+      "name": "Auth - CreateToken",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "\nfunction randInt(min, max) {\n    return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction pick(arr) {\n    return arr[randInt(0, arr.length - 1)];\n}\n\nfunction randomString(length) {\n    var chars = 'abcdefghijklmnopqrstuvwxyz';\n    var s = '';\n    for (var i = 0; i < length; i++) {\n        s += chars[randInt(0, chars.length - 1)];\n    }\n    return s;\n}\n\nfunction randomFirstName() {\n    var names = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Linda', 'Michael', 'Barbara', 'David', 'Elizabeth'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomLastName() {\n    var names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomTotalPrice() {\n    return randInt(10, 2000);\n}\n\nfunction randomDepositPaid() {\n    return Math.random() < 0.5;\n}\n\nfunction pad(n) {\n    return n < 10 ? '0' + n : '' + n;\n}\n\n// Возвращает дату в формате YYYY-MM-DD, смещённую от сегодняшней на случайное\n// число дней в диапазоне [startOffsetDays, endOffsetDays].\nfunction randomDate(startOffsetDays, endOffsetDays) {\n    var base = new Date();\n    var offset = randInt(startOffsetDays, endOffsetDays);\n    base.setDate(base.getDate() + offset);\n    return base.getFullYear() + '-' + pad(base.getMonth() + 1) + '-' + pad(base.getDate());\n}\n\nfunction randomBookingDates() {\n    var checkin = randomDate(1, 30);\n    var checkout = randomDate(31, 90);\n    return { checkin: checkin, checkout: checkout };\n}\n\nfunction randomAdditionalNeeds() {\n    return pick(['Breakfast', 'Dinner', 'Lunch', 'Late checkout', 'Extra towels', 'Parking']);\n}\n\nfunction randomInvalidToken() {\n    return randomString(15) + randomString(5);\n}\n\nfunction randomBigId() {\n    return randInt(900000000000, 999999999999);\n}\n\n// Строит динамическое валидное тело Booking со случайными данными.\n// overrides позволяет подменить/удалить конкретные поля под конкретный тест-кейс:\n//   { field: VALUE }        -> заменить значение поля\n//   { field: 'DELETE_FIELD__' }   -> удалить поле целиком\n//   { bookingdates: {...} } -> примешать/удалить вложенные поля checkin/checkout\nfunction buildBookingObject(overrides) {\n    var dates = randomBookingDates();\n    var obj = {\n        firstname: randomFirstName(),\n        lastname: randomLastName(),\n        totalprice: randomTotalPrice(),\n        depositpaid: randomDepositPaid(),\n        bookingdates: { checkin: dates.checkin, checkout: dates.checkout },\n        additionalneeds: randomAdditionalNeeds()\n    };\n    if (overrides) {\n        Object.keys(overrides).forEach(function (key) {\n            if (overrides[key] === 'DELETE_FIELD__') {\n                delete obj[key];\n            } else if (key === 'bookingdates' && typeof overrides[key] === 'object' && overrides[key] !== null) {\n                var merged = Object.assign({}, obj.bookingdates);\n                Object.keys(overrides[key]).forEach(function (subKey) {\n                    if (overrides[key][subKey] === 'DELETE_FIELD__') {\n                        delete merged[subKey];\n                    } else {\n                        merged[subKey] = overrides[key][subKey];\n                    }\n                });\n                obj.bookingdates = merged;\n            } else {\n                obj[key] = overrides[key];\n            }\n        });\n    }\n    return obj;\n}\n\nfunction buildBookingXml(obj) {\n    var xml = '<booking>\\n';\n    xml += '  <firstname>' + obj.firstname + '</firstname>\\n';\n    xml += '  <lastname>' + obj.lastname + '</lastname>\\n';\n    xml += '  <totalprice>' + obj.totalprice + '</totalprice>\\n';\n    xml += '  <depositpaid>' + obj.depositpaid + '</depositpaid>\\n';\n    xml += '  <bookingdates>\\n';\n    xml += '    <checkin>' + obj.bookingdates.checkin + '</checkin>\\n';\n    xml += '    <checkout>' + obj.bookingdates.checkout + '</checkout>\\n';\n    xml += '  </bookingdates>\\n';\n    if (obj.additionalneeds !== undefined) {\n        xml += '  <additionalneeds>' + obj.additionalneeds + '</additionalneeds>\\n';\n    }\n    xml += '</booking>';\n    return xml;\n}\n\n// pm.sendRequest возвращает Promise, если не передан callback.\nfunction sendRequestAsync(requestConfig) {\n    return pm.sendRequest(requestConfig);\n}\n\n// Получает НОВЫЙ токен при каждом вызове.\nfunction getFreshToken(username, password) {\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: {\n            mode: 'raw',\n            raw: JSON.stringify({\n                username: username || pm.collectionVariables.get('validUsername'),\n                password: password || pm.collectionVariables.get('validPassword')\n            })\n        }\n    }).then(function (res) {\n        var json = res.json();\n        return json.token;\n    });\n}\n\n// Создаёт НОВУЮ запись booking при каждом вызове .\nfunction createFreshBooking(overrides) {\n    var bodyObj = buildBookingObject(overrides);\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json', 'Accept': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(bodyObj) }\n    }).then(function (res) {\n        var json = res.json();\n        return { id: json.bookingid, body: bodyObj, response: res, raw: json };\n    });\n}\n\n(async function () {\n    // TC1: валидные username/password -> 200 OK (ответ основного запроса)\n    pm.test('Запрос POST на эндпоинт /auth с валидными username и password в body возвращает ответ 200 OK', function () {\n        pm.response.to.have.status(200);\n    });\n\n    // TC2: тело ответа содержит токен\n    pm.test('Запрос POST на эндпоинт /auth с валидными username и password в body возвращает тело ответа с токеном в формате json: {\"token\": \"…......\"}', function () {\n        var json = pm.response.json();\n        pm.expect(json).to.have.property('token');\n        pm.expect(json.token).to.be.a('string').and.not.empty;\n    });\n\n    // TC3 и TC4: запрос без body\n    var resNoBody = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' }\n    });\n    pm.test('Запрос POST на эндпоинт /auth без body возвращает ответ 401 Unauthorized', function () {\n        pm.expect(resNoBody.code).to.eql(401);\n    });\n    pm.test('Запрос POST на эндпоинт /auth без body возвращает тело ответа {\"reason\": \"Bad credentials\"}', function () {\n        pm.expect(resNoBody.json()).to.eql({ reason: 'Bad credentials' });\n    });\n\n    // TC5 и TC6: пустой username\n    var resEmptyUser = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify({ username: '', password: pm.collectionVariables.get('validPassword') }) }\n    });\n    pm.test('Запрос POST на эндпоинт /auth с пустым значением параметра username в body возвращает ответ 401 Unauthorized', function () {\n        pm.expect(resEmptyUser.code).to.eql(401);\n    });\n    pm.test('Запрос POST на эндпоинт /auth с пустым значением параметра username в body возвращает тело ответа {\"reason\": \"Bad credentials\"}', function () {\n        pm.expect(resEmptyUser.json()).to.eql({ reason: 'Bad credentials' });\n    });\n\n    // TC7 и TC8: невалидный username\n    var resBadUser = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify({ username: 'adminerror', password: pm.collectionVariables.get('validPassword') }) }\n    });\n    pm.test('Запрос POST на эндпоинт /auth с невалидным значением параметра username в body возвращает ответ 401 Unauthorized', function () {\n        pm.expect(resBadUser.code).to.eql(401);\n    });\n    pm.test('Запрос POST на эндпоинт /auth с невалидным значением параметра username в body возвращает тело ответа {\"reason\": \"Bad credentials\"}', function () {\n        pm.expect(resBadUser.json()).to.eql({ reason: 'Bad credentials' });\n    });\n\n    // TC9 и TC10: пустой password\n    var resEmptyPass = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify({ username: pm.collectionVariables.get('validUsername'), password: '' }) }\n    });\n    pm.test('Запрос POST на эндпоинт /auth с пустым значением параметра password в body возвращает ответ 401 Unauthorized', function () {\n        pm.expect(resEmptyPass.code).to.eql(401);\n    });\n    pm.test('Запрос POST на эндпоинт /auth с пустым значением параметра password в body возвращает тело ответа {\"reason\": \"Bad credentials\"}', function () {\n        pm.expect(resEmptyPass.json()).to.eql({ reason: 'Bad credentials' });\n    });\n\n    // TC11 и TC12: невалидный password\n    var resBadPass = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify({ username: pm.collectionVariables.get('validUsername'), password: 'passworderror' }) }\n    });\n    pm.test('Запрос POST на эндпоинт /auth с невалидным значением параметра password в body возвращает ответ 401 Unauthorized', function () {\n        pm.expect(resBadPass.code).to.eql(401);\n    });\n    pm.test('Запрос POST на эндпоинт /auth с невалидным значением параметра password в body возвращает тело ответа {\"reason\": \"Bad credentials\"}', function () {\n        pm.expect(resBadPass.json()).to.eql({ reason: 'Bad credentials' });\n    });\n})();"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"username\" : \"admin\",\n    \"password\" : \"password123\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/auth",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "auth"
+          ]
+        },
+        "description": "Базовый позитивный вызов /auth. Тест-кейсы TC1-TC12 по /auth реализованы во вкладке Tests. TC13 (запрос по HTTP) вынесен в отдельный запрос \"Auth - CreateToken (HTTP)\" ниже."
+      },
+      "response": []
+    },
+    {
+      "name": "Auth - CreateToken (HTTP)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// TC13: валидные username/password, но запрос отправлен по HTTP (не HTTPS).\npm.test('Запрос POST на эндпоинт /auth с валидными username и password в body по протоколу HTTP (не HTTPS) возвращает ответ 400 Bad request без токена в теле ответа', function () {\n    pm.expect(pm.response.code).to.eql(400);\n    pm.expect(pm.response.text()).to.not.include('token');\n});"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "followRedirects": false
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"username\" : \"admin\",\n    \"password\" : \"password123\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrlHttp}}/auth",
+          "host": [
+            "{{baseUrlHttp}}"
+          ],
+          "path": [
+            "auth"
+          ]
+        },
+        "description": "TC13: валидные учётные данные, запрос по HTTP (не HTTPS). Follow Redirects отключён (см. вкладку Settings этого запроса / protocolProfileBehavior.followRedirects), чтобы Postman не перенаправлял запрос на HTTPS автоматически и тест видел реальный ответ сервера на HTTP."
+      },
+      "response": []
+    },
+    {
+      "name": "Booking - CreateBooking",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ========================= ОБЩИЕ ХЕЛПЕРЫ (Collection Pre-request Script) =========================\n// Эти функции доступны в Pre-request script и Tests script КАЖДОГО запроса,\n// так как Postman выполняет их в одном JS-контексте для одного вызова запроса.\n\nfunction randInt(min, max) {\n    return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction pick(arr) {\n    return arr[randInt(0, arr.length - 1)];\n}\n\nfunction randomString(length) {\n    var chars = 'abcdefghijklmnopqrstuvwxyz';\n    var s = '';\n    for (var i = 0; i < length; i++) {\n        s += chars[randInt(0, chars.length - 1)];\n    }\n    return s;\n}\n\nfunction randomFirstName() {\n    var names = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Linda', 'Michael', 'Barbara', 'David', 'Elizabeth'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomLastName() {\n    var names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomTotalPrice() {\n    return randInt(10, 2000);\n}\n\nfunction randomDepositPaid() {\n    return Math.random() < 0.5;\n}\n\nfunction pad(n) {\n    return n < 10 ? '0' + n : '' + n;\n}\n\n// Возвращает дату в формате YYYY-MM-DD, смещённую от сегодняшней на случайное\n// число дней в диапазоне [startOffsetDays, endOffsetDays].\nfunction randomDate(startOffsetDays, endOffsetDays) {\n    var base = new Date();\n    var offset = randInt(startOffsetDays, endOffsetDays);\n    base.setDate(base.getDate() + offset);\n    return base.getFullYear() + '-' + pad(base.getMonth() + 1) + '-' + pad(base.getDate());\n}\n\nfunction randomBookingDates() {\n    var checkin = randomDate(1, 30);\n    var checkout = randomDate(31, 90);\n    return { checkin: checkin, checkout: checkout };\n}\n\nfunction randomAdditionalNeeds() {\n    return pick(['Breakfast', 'Dinner', 'Lunch', 'Late checkout', 'Extra towels', 'Parking']);\n}\n\nfunction randomInvalidToken() {\n    return randomString(15) + randomString(5);\n}\n\nfunction randomBigId() {\n    return randInt(900000000000, 999999999999);\n}\n\n// Строит динамическое валидное тело Booking со случайными данными.\n// overrides позволяет подменить/удалить конкретные поля под конкретный тест-кейс:\n//   { field: VALUE }        -> заменить значение поля\n//   { field: 'DELETE_FIELD__' }   -> удалить поле целиком\n//   { bookingdates: {...} } -> примешать/удалить вложенные поля checkin/checkout\nfunction buildBookingObject(overrides) {\n    var dates = randomBookingDates();\n    var obj = {\n        firstname: randomFirstName(),\n        lastname: randomLastName(),\n        totalprice: randomTotalPrice(),\n        depositpaid: randomDepositPaid(),\n        bookingdates: { checkin: dates.checkin, checkout: dates.checkout },\n        additionalneeds: randomAdditionalNeeds()\n    };\n    if (overrides) {\n        Object.keys(overrides).forEach(function (key) {\n            if (overrides[key] === 'DELETE_FIELD__') {\n                delete obj[key];\n            } else if (key === 'bookingdates' && typeof overrides[key] === 'object' && overrides[key] !== null) {\n                var merged = Object.assign({}, obj.bookingdates);\n                Object.keys(overrides[key]).forEach(function (subKey) {\n                    if (overrides[key][subKey] === 'DELETE_FIELD__') {\n                        delete merged[subKey];\n                    } else {\n                        merged[subKey] = overrides[key][subKey];\n                    }\n                });\n                obj.bookingdates = merged;\n            } else {\n                obj[key] = overrides[key];\n            }\n        });\n    }\n    return obj;\n}\n\nfunction buildBookingXml(obj) {\n    var xml = '<booking>\\n';\n    xml += '  <firstname>' + obj.firstname + '</firstname>\\n';\n    xml += '  <lastname>' + obj.lastname + '</lastname>\\n';\n    xml += '  <totalprice>' + obj.totalprice + '</totalprice>\\n';\n    xml += '  <depositpaid>' + obj.depositpaid + '</depositpaid>\\n';\n    xml += '  <bookingdates>\\n';\n    xml += '    <checkin>' + obj.bookingdates.checkin + '</checkin>\\n';\n    xml += '    <checkout>' + obj.bookingdates.checkout + '</checkout>\\n';\n    xml += '  </bookingdates>\\n';\n    if (obj.additionalneeds !== undefined) {\n        xml += '  <additionalneeds>' + obj.additionalneeds + '</additionalneeds>\\n';\n    }\n    xml += '</booking>';\n    return xml;\n}\n\n// pm.sendRequest возвращает Promise, если не передан callback (Postman v10+).\nfunction sendRequestAsync(requestConfig) {\n    return pm.sendRequest(requestConfig);\n}\n\n// Получает НОВЫЙ токен при каждом вызове (требование независимости тестов).\nfunction getFreshToken(username, password) {\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: {\n            mode: 'raw',\n            raw: JSON.stringify({\n                username: username || pm.collectionVariables.get('validUsername'),\n                password: password || pm.collectionVariables.get('validPassword')\n            })\n        }\n    }).then(function (res) {\n        var json = res.json();\n        return json.token;\n    });\n}\n\n// Создаёт НОВУЮ запись booking при каждом вызове (требование независимости тестов).\nfunction createFreshBooking(overrides) {\n    var bodyObj = buildBookingObject(overrides);\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json', 'Accept': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(bodyObj) }\n    }).then(function (res) {\n        var json = res.json();\n        return { id: json.bookingid, body: bodyObj, response: res, raw: json };\n    });\n}\n\n// Динамическое тело для ОСНОВНОГО запроса этого элемента (валидные случайные данные).\nvar mainBookingBody = buildBookingObject();\npm.variables.set('mainBookingBodyJson', JSON.stringify(mainBookingBody, null, 4));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function randInt(min, max) {\n    return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction pick(arr) {\n    return arr[randInt(0, arr.length - 1)];\n}\n\nfunction randomString(length) {\n    var chars = 'abcdefghijklmnopqrstuvwxyz';\n    var s = '';\n    for (var i = 0; i < length; i++) {\n        s += chars[randInt(0, chars.length - 1)];\n    }\n    return s;\n}\n\nfunction randomFirstName() {\n    var names = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Linda', 'Michael', 'Barbara', 'David', 'Elizabeth'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomLastName() {\n    var names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomTotalPrice() {\n    return randInt(10, 2000);\n}\n\nfunction randomDepositPaid() {\n    return Math.random() < 0.5;\n}\n\nfunction pad(n) {\n    return n < 10 ? '0' + n : '' + n;\n}\n\n// Возвращает дату в формате YYYY-MM-DD, смещённую от сегодняшней на случайное\n// число дней в диапазоне [startOffsetDays, endOffsetDays].\nfunction randomDate(startOffsetDays, endOffsetDays) {\n    var base = new Date();\n    var offset = randInt(startOffsetDays, endOffsetDays);\n    base.setDate(base.getDate() + offset);\n    return base.getFullYear() + '-' + pad(base.getMonth() + 1) + '-' + pad(base.getDate());\n}\n\nfunction randomBookingDates() {\n    var checkin = randomDate(1, 30);\n    var checkout = randomDate(31, 90);\n    return { checkin: checkin, checkout: checkout };\n}\n\nfunction randomAdditionalNeeds() {\n    return pick(['Breakfast', 'Dinner', 'Lunch', 'Late checkout', 'Extra towels', 'Parking']);\n}\n\nfunction randomInvalidToken() {\n    return randomString(15) + randomString(5);\n}\n\nfunction randomBigId() {\n    return randInt(900000000000, 999999999999);\n}\n\n// Строит динамическое валидное тело Booking со случайными данными.\n// overrides позволяет подменить/удалить конкретные поля под конкретный тест-кейс:\n//   { field: VALUE }        -> заменить значение поля\n//   { field: 'DELETE_FIELD__' }   -> удалить поле целиком\n//   { bookingdates: {...} } -> примешать/удалить вложенные поля checkin/checkout\nfunction buildBookingObject(overrides) {\n    var dates = randomBookingDates();\n    var obj = {\n        firstname: randomFirstName(),\n        lastname: randomLastName(),\n        totalprice: randomTotalPrice(),\n        depositpaid: randomDepositPaid(),\n        bookingdates: { checkin: dates.checkin, checkout: dates.checkout },\n        additionalneeds: randomAdditionalNeeds()\n    };\n    if (overrides) {\n        Object.keys(overrides).forEach(function (key) {\n            if (overrides[key] === 'DELETE_FIELD__') {\n                delete obj[key];\n            } else if (key === 'bookingdates' && typeof overrides[key] === 'object' && overrides[key] !== null) {\n                var merged = Object.assign({}, obj.bookingdates);\n                Object.keys(overrides[key]).forEach(function (subKey) {\n                    if (overrides[key][subKey] === 'DELETE_FIELD__') {\n                        delete merged[subKey];\n                    } else {\n                        merged[subKey] = overrides[key][subKey];\n                    }\n                });\n                obj.bookingdates = merged;\n            } else {\n                obj[key] = overrides[key];\n            }\n        });\n    }\n    return obj;\n}\n\nfunction buildBookingXml(obj) {\n    var xml = '<booking>\\n';\n    xml += '  <firstname>' + obj.firstname + '</firstname>\\n';\n    xml += '  <lastname>' + obj.lastname + '</lastname>\\n';\n    xml += '  <totalprice>' + obj.totalprice + '</totalprice>\\n';\n    xml += '  <depositpaid>' + obj.depositpaid + '</depositpaid>\\n';\n    xml += '  <bookingdates>\\n';\n    xml += '    <checkin>' + obj.bookingdates.checkin + '</checkin>\\n';\n    xml += '    <checkout>' + obj.bookingdates.checkout + '</checkout>\\n';\n    xml += '  </bookingdates>\\n';\n    if (obj.additionalneeds !== undefined) {\n        xml += '  <additionalneeds>' + obj.additionalneeds + '</additionalneeds>\\n';\n    }\n    xml += '</booking>';\n    return xml;\n}\n\n// pm.sendRequest возвращает Promise, если не передан callback.\nfunction sendRequestAsync(requestConfig) {\n    return pm.sendRequest(requestConfig);\n}\n\n// Получает НОВЫЙ токен при каждом вызове.\nfunction getFreshToken(username, password) {\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: {\n            mode: 'raw',\n            raw: JSON.stringify({\n                username: username || pm.collectionVariables.get('validUsername'),\n                password: password || pm.collectionVariables.get('validPassword')\n            })\n        }\n    }).then(function (res) {\n        var json = res.json();\n        return json.token;\n    });\n}\n\n// Создаёт НОВУЮ запись booking при каждом вызове.\nfunction createFreshBooking(overrides) {\n    var bodyObj = buildBookingObject(overrides);\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json', 'Accept': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(bodyObj) }\n    }).then(function (res) {\n        var json = res.json();\n        return { id: json.bookingid, body: bodyObj, response: res, raw: json };\n    });\n}\n\n(async function () {\n    // TC15: валидный JSON -> 201 Created (ответ основного запроса)\n    pm.test('Запрос Post на эндпоинт /booking с валидным JSON в Body возвращает ответ 201 Created', function () {\n        pm.response.to.have.status(201);\n    });\n\n    // TC16: тело ответа соответствует JSON-схеме\n    var bookingResponseSchema = {\n        type: 'object',\n        properties: {\n            bookingid: { type: 'integer' },\n            booking: {\n                type: 'object',\n                properties: {\n                    firstname: { type: 'string' },\n                    lastname: { type: 'string' },\n                    totalprice: { type: 'integer' },\n                    depositpaid: { type: 'boolean' },\n                    bookingdates: {\n                        type: 'object',\n                        properties: {\n                            checkin: { type: 'string' },\n                            checkout: { type: 'string' }\n                        },\n                        required: ['checkin', 'checkout']\n                    },\n                    additionalneeds: { type: 'string' }\n                },\n                required: ['firstname', 'lastname', 'totalprice', 'depositpaid', 'bookingdates']\n            }\n        },\n        required: ['bookingid', 'booking']\n    };\n    pm.test('Запрос Post на эндпоинт /booking с валидным JSON в Body возвращает в теле ответа JSON, соответствующий схеме: см. Description', function () {\n        pm.response.to.have.jsonSchema(bookingResponseSchema);\n    });\n\n    // TC14: валидный XML в body -> 201 Created\n    var xmlBodyObj = buildBookingObject();\n    var resXml = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking',\n        method: 'POST',\n        header: { 'Content-Type': 'application/xml', 'Accept': 'application/xml' },\n        body: { mode: 'raw', raw: buildBookingXml(xmlBodyObj) }\n    });\n    pm.test('Запрос Post на эндпоинт /booking с валидным XML в Body возвращает ответ 201 Created', function () {\n        pm.expect(resXml.code).to.eql(201);\n    });\n\n    // TC17: ответ в формате XML соответствует ожидаемой структуре\n    var resXmlAccept = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json', 'Accept': 'application/xml' },\n        body: { mode: 'raw', raw: JSON.stringify(buildBookingObject()) }\n    });\n    pm.test('Запрос Post на эндпоинт /booking с валидным JSON в Body возвращает в теле ответа XML , соответствующий схеме:  см. Description', function () {\n        var xml = resXmlAccept.text();\n        pm.expect(xml).to.include('<created-booking>');\n        pm.expect(xml).to.match(/<bookingid>\\d+<\\/bookingid>/);\n        pm.expect(xml).to.include('<booking>');\n        pm.expect(xml).to.match(/<firstname>[^<]*<\\/firstname>/);\n        pm.expect(xml).to.match(/<lastname>[^<]*<\\/lastname>/);\n        pm.expect(xml).to.match(/<totalprice>\\d+<\\/totalprice>/);\n        pm.expect(xml).to.match(/<depositpaid>(true|false)<\\/depositpaid>/);\n        pm.expect(xml).to.include('<bookingdates>');\n        pm.expect(xml).to.match(/<checkin>[\\d-]+<\\/checkin>/);\n        pm.expect(xml).to.match(/<checkout>[\\d-]+<\\/checkout>/);\n    });\n\n    // Отправляет POST /booking с заданным телом и проверить код ответа.\n    async function expectInvalidBooking(summary, overrides, expectedStatus) {\n        var bodyObj = buildBookingObject(overrides);\n        var res = await sendRequestAsync({\n            url: pm.collectionVariables.get('baseUrl') + '/booking',\n            method: 'POST',\n            header: { 'Content-Type': 'application/json' },\n            body: { mode: 'raw', raw: JSON.stringify(bodyObj) }\n        });\n        pm.test(summary, function () {\n            pm.expect(res.code).to.eql(expectedStatus);\n        });\n    }\n\n    await expectInvalidBooking('Запрос Post на эндпоинт /booking без параметра \"firstname\" возвражщает ответ 400 Bad request', { firstname: 'DELETE_FIELD__' }, 400);\n    await expectInvalidBooking('Запрос Post на эндпоинт /booking без параметра \"lastname\" возвражщает ответ 400 Bad request', { lastname: 'DELETE_FIELD__' }, 400);\n    await expectInvalidBooking('Запрос Post на эндпоинт /booking с типом данных Number в параметре \"firstname\" возвражщает ответ 400 Bad request', { firstname: randomTotalPrice() }, 400);\n    await expectInvalidBooking('Запрос Post на эндпоинт /booking с типом данных Number в параметре \"lastname\" возвражщает ответ 400 Bad request', { lastname: randomTotalPrice() }, 400);\n    await expectInvalidBooking('Запрос Post на эндпоинт /booking с типом данных Boolean в параметре \"firstname\" возвражщает ответ 400 Bad request', { firstname: true }, 400);\n    await expectInvalidBooking('Запрос Post на эндпоинт /booking с типом данных Boolean в параметре \"lastname\" возвражщает ответ 400 Bad request', { lastname: false }, 400);\n    await expectInvalidBooking('Запрос Post на эндпоинт /booking с типом данных array в параметре \"firstname\" возвражщает ответ 400 Bad request', { firstname: [randomFirstName()] }, 400);\n    await expectInvalidBooking('Запрос Post на эндпоинт /booking с типом данных array в параметре \"lastname\" возвражщает ответ 400 Bad request', { lastname: [randomLastName()] }, 400);\n    await expectInvalidBooking('Запрос Post на эндпоинт /booking без параметра \"totalprice\" возвражщает ответ 400 Bad request', { totalprice: 'DELETE_FIELD__' }, 400);\n    // TC27: отрицательное число в totalprice -- и как Number, и как String (два запроса)\n    var negNum = -randomTotalPrice();\n    var resNegNum = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking', method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(buildBookingObject({ totalprice: negNum })) }\n    });\n    var resNegStr = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking', method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(buildBookingObject({ totalprice: String(negNum) })) }\n    });\n    pm.test('Запрос Post на эндпоинт /booking с отрицательным числом (в виде Numder или String) в параметре \"totalprice\" возвражщает ответ 400 Bad request', function () {\n        pm.expect(resNegNum.code).to.eql(400);\n        pm.expect(resNegStr.code).to.eql(400);\n    });\n\n    await expectInvalidBooking('Запрос Post на эндпоинт /booking без параметра \"depositpaid\" возвражщает ответ 400 Bad request', { depositpaid: 'DELETE_FIELD__' }, 400);\n    await expectInvalidBooking('Запрос Post на эндпоинт /booking без параметра \"bookingdates\" возвражщает ответ 400 Bad request', { bookingdates: 'DELETE_FIELD__' }, 400);\n    await expectInvalidBooking('При запросе Post на эндпоинт /booking с пустой строкой в парметре \"checkin\"возвращается ответ 400 Bad request', { bookingdates: { checkin: '' } }, 400);\n    await expectInvalidBooking('При запросе Post на эндпоинт /booking с пустой строкой в парметре \"checkout\"возвращается ответ 400 Bad request', { bookingdates: { checkout: '' } }, 400);\n    await expectInvalidBooking('При запросе Post на эндпоинт /booking, где дата \"checkout\" раньше даты \"checkin\", возвращается ответ 400 Bad request', { bookingdates: { checkin: randomDate(60, 90), checkout: randomDate(1, 30) } }, 400);\n    await expectInvalidBooking('При запросе Post на эндпоинт /booking с некорректным форматом даты в \"checkin\"возвращается ответ 400 Bad request', { bookingdates: { checkin: '20191001' } }, 400);\n    await expectInvalidBooking('При запросе Post на эндпоинт /booking с некорректным форматом даты в \"checkout\"возвращается ответ 400 Bad request', { bookingdates: { checkout: '20190101' } }, 400);\n})();"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{mainBookingBodyJson}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/booking",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "booking"
+          ]
+        },
+        "description": "Тело запроса генерируется динамически в Pre-request Script (случайные firstname/lastname/даты и т.д.). Все 21 тест-кейс по /booking POST (TC14-TC34) реализованы во вкладке Tests."
+      },
+      "response": []
+    },
+    {
+      "name": "Booking - GetBooking",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ========================= ОБЩИЕ ХЕЛПЕРЫ (Collection Pre-request Script) =========================\n// Эти функции доступны в Pre-request script и Tests script КАЖДОГО запроса,\n// так как Postman выполняет их в одном JS-контексте для одного вызова запроса.\n\nfunction randInt(min, max) {\n    return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction pick(arr) {\n    return arr[randInt(0, arr.length - 1)];\n}\n\nfunction randomString(length) {\n    var chars = 'abcdefghijklmnopqrstuvwxyz';\n    var s = '';\n    for (var i = 0; i < length; i++) {\n        s += chars[randInt(0, chars.length - 1)];\n    }\n    return s;\n}\n\nfunction randomFirstName() {\n    var names = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Linda', 'Michael', 'Barbara', 'David', 'Elizabeth'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomLastName() {\n    var names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomTotalPrice() {\n    return randInt(10, 2000);\n}\n\nfunction randomDepositPaid() {\n    return Math.random() < 0.5;\n}\n\nfunction pad(n) {\n    return n < 10 ? '0' + n : '' + n;\n}\n\n// Возвращает дату в формате YYYY-MM-DD, смещённую от сегодняшней на случайное\n// число дней в диапазоне [startOffsetDays, endOffsetDays].\nfunction randomDate(startOffsetDays, endOffsetDays) {\n    var base = new Date();\n    var offset = randInt(startOffsetDays, endOffsetDays);\n    base.setDate(base.getDate() + offset);\n    return base.getFullYear() + '-' + pad(base.getMonth() + 1) + '-' + pad(base.getDate());\n}\n\nfunction randomBookingDates() {\n    var checkin = randomDate(1, 30);\n    var checkout = randomDate(31, 90);\n    return { checkin: checkin, checkout: checkout };\n}\n\nfunction randomAdditionalNeeds() {\n    return pick(['Breakfast', 'Dinner', 'Lunch', 'Late checkout', 'Extra towels', 'Parking']);\n}\n\nfunction randomInvalidToken() {\n    return randomString(15) + randomString(5);\n}\n\nfunction randomBigId() {\n    return randInt(900000000000, 999999999999);\n}\n\n// Строит динамическое валидное тело Booking со случайными данными.\n// overrides позволяет подменить/удалить конкретные поля под конкретный тест-кейс:\n//   { field: VALUE }        -> заменить значение поля\n//   { field: 'DELETE_FIELD__' }   -> удалить поле целиком\n//   { bookingdates: {...} } -> примешать/удалить вложенные поля checkin/checkout\nfunction buildBookingObject(overrides) {\n    var dates = randomBookingDates();\n    var obj = {\n        firstname: randomFirstName(),\n        lastname: randomLastName(),\n        totalprice: randomTotalPrice(),\n        depositpaid: randomDepositPaid(),\n        bookingdates: { checkin: dates.checkin, checkout: dates.checkout },\n        additionalneeds: randomAdditionalNeeds()\n    };\n    if (overrides) {\n        Object.keys(overrides).forEach(function (key) {\n            if (overrides[key] === 'DELETE_FIELD__') {\n                delete obj[key];\n            } else if (key === 'bookingdates' && typeof overrides[key] === 'object' && overrides[key] !== null) {\n                var merged = Object.assign({}, obj.bookingdates);\n                Object.keys(overrides[key]).forEach(function (subKey) {\n                    if (overrides[key][subKey] === 'DELETE_FIELD__') {\n                        delete merged[subKey];\n                    } else {\n                        merged[subKey] = overrides[key][subKey];\n                    }\n                });\n                obj.bookingdates = merged;\n            } else {\n                obj[key] = overrides[key];\n            }\n        });\n    }\n    return obj;\n}\n\nfunction buildBookingXml(obj) {\n    var xml = '<booking>\\n';\n    xml += '  <firstname>' + obj.firstname + '</firstname>\\n';\n    xml += '  <lastname>' + obj.lastname + '</lastname>\\n';\n    xml += '  <totalprice>' + obj.totalprice + '</totalprice>\\n';\n    xml += '  <depositpaid>' + obj.depositpaid + '</depositpaid>\\n';\n    xml += '  <bookingdates>\\n';\n    xml += '    <checkin>' + obj.bookingdates.checkin + '</checkin>\\n';\n    xml += '    <checkout>' + obj.bookingdates.checkout + '</checkout>\\n';\n    xml += '  </bookingdates>\\n';\n    if (obj.additionalneeds !== undefined) {\n        xml += '  <additionalneeds>' + obj.additionalneeds + '</additionalneeds>\\n';\n    }\n    xml += '</booking>';\n    return xml;\n}\n\n// pm.sendRequest возвращает Promise, если не передан callback (Postman v10+).\nfunction sendRequestAsync(requestConfig) {\n    return pm.sendRequest(requestConfig);\n}\n\n// Получает НОВЫЙ токен при каждом вызове (требование независимости тестов).\nfunction getFreshToken(username, password) {\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: {\n            mode: 'raw',\n            raw: JSON.stringify({\n                username: username || pm.collectionVariables.get('validUsername'),\n                password: password || pm.collectionVariables.get('validPassword')\n            })\n        }\n    }).then(function (res) {\n        var json = res.json();\n        return json.token;\n    });\n}\n\n// Создаёт НОВУЮ запись booking при каждом вызове (требование независимости тестов).\nfunction createFreshBooking(overrides) {\n    var bodyObj = buildBookingObject(overrides);\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json', 'Accept': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(bodyObj) }\n    }).then(function (res) {\n        var json = res.json();\n        return { id: json.bookingid, body: bodyObj, response: res, raw: json };\n    });\n}\n\n// Предусловие TC35: создаём новую запись booking и используем её id в URL.\n(async function () {\n    try {\n        var created = await createFreshBooking();\n        pm.variables.set('getBookingId', created.id);\n    } catch (e) {\n        console.log('[GetBooking pre-request] Не удалось создать booking: ' + e.message);\n        pm.variables.set('getBookingId', '0');\n    }\n})();"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function randInt(min, max) {\n    return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction pick(arr) {\n    return arr[randInt(0, arr.length - 1)];\n}\n\nfunction randomString(length) {\n    var chars = 'abcdefghijklmnopqrstuvwxyz';\n    var s = '';\n    for (var i = 0; i < length; i++) {\n        s += chars[randInt(0, chars.length - 1)];\n    }\n    return s;\n}\n\nfunction randomFirstName() {\n    var names = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Linda', 'Michael', 'Barbara', 'David', 'Elizabeth'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomLastName() {\n    var names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomTotalPrice() {\n    return randInt(10, 2000);\n}\n\nfunction randomDepositPaid() {\n    return Math.random() < 0.5;\n}\n\nfunction pad(n) {\n    return n < 10 ? '0' + n : '' + n;\n}\n\n// Возвращает дату в формате YYYY-MM-DD, смещённую от сегодняшней на случайное\n// число дней в диапазоне [startOffsetDays, endOffsetDays].\nfunction randomDate(startOffsetDays, endOffsetDays) {\n    var base = new Date();\n    var offset = randInt(startOffsetDays, endOffsetDays);\n    base.setDate(base.getDate() + offset);\n    return base.getFullYear() + '-' + pad(base.getMonth() + 1) + '-' + pad(base.getDate());\n}\n\nfunction randomBookingDates() {\n    var checkin = randomDate(1, 30);\n    var checkout = randomDate(31, 90);\n    return { checkin: checkin, checkout: checkout };\n}\n\nfunction randomAdditionalNeeds() {\n    return pick(['Breakfast', 'Dinner', 'Lunch', 'Late checkout', 'Extra towels', 'Parking']);\n}\n\nfunction randomInvalidToken() {\n    return randomString(15) + randomString(5);\n}\n\nfunction randomBigId() {\n    return randInt(900000000000, 999999999999);\n}\n\n// Строит динамическое валидное тело Booking со случайными данными.\n// overrides позволяет подменить/удалить конкретные поля под конкретный тест-кейс:\n//   { field: VALUE }        -> заменить значение поля\n//   { field: 'DELETE_FIELD__' }   -> удалить поле целиком\n//   { bookingdates: {...} } -> примешать/удалить вложенные поля checkin/checkout\nfunction buildBookingObject(overrides) {\n    var dates = randomBookingDates();\n    var obj = {\n        firstname: randomFirstName(),\n        lastname: randomLastName(),\n        totalprice: randomTotalPrice(),\n        depositpaid: randomDepositPaid(),\n        bookingdates: { checkin: dates.checkin, checkout: dates.checkout },\n        additionalneeds: randomAdditionalNeeds()\n    };\n    if (overrides) {\n        Object.keys(overrides).forEach(function (key) {\n            if (overrides[key] === 'DELETE_FIELD__') {\n                delete obj[key];\n            } else if (key === 'bookingdates' && typeof overrides[key] === 'object' && overrides[key] !== null) {\n                var merged = Object.assign({}, obj.bookingdates);\n                Object.keys(overrides[key]).forEach(function (subKey) {\n                    if (overrides[key][subKey] === 'DELETE_FIELD__') {\n                        delete merged[subKey];\n                    } else {\n                        merged[subKey] = overrides[key][subKey];\n                    }\n                });\n                obj.bookingdates = merged;\n            } else {\n                obj[key] = overrides[key];\n            }\n        });\n    }\n    return obj;\n}\n\nfunction buildBookingXml(obj) {\n    var xml = '<booking>\\n';\n    xml += '  <firstname>' + obj.firstname + '</firstname>\\n';\n    xml += '  <lastname>' + obj.lastname + '</lastname>\\n';\n    xml += '  <totalprice>' + obj.totalprice + '</totalprice>\\n';\n    xml += '  <depositpaid>' + obj.depositpaid + '</depositpaid>\\n';\n    xml += '  <bookingdates>\\n';\n    xml += '    <checkin>' + obj.bookingdates.checkin + '</checkin>\\n';\n    xml += '    <checkout>' + obj.bookingdates.checkout + '</checkout>\\n';\n    xml += '  </bookingdates>\\n';\n    if (obj.additionalneeds !== undefined) {\n        xml += '  <additionalneeds>' + obj.additionalneeds + '</additionalneeds>\\n';\n    }\n    xml += '</booking>';\n    return xml;\n}\n\n// pm.sendRequest возвращает Promise, если не передан callback.\nfunction sendRequestAsync(requestConfig) {\n    return pm.sendRequest(requestConfig);\n}\n\n// Получает НОВЫЙ токен при каждом вызове.\nfunction getFreshToken(username, password) {\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: {\n            mode: 'raw',\n            raw: JSON.stringify({\n                username: username || pm.collectionVariables.get('validUsername'),\n                password: password || pm.collectionVariables.get('validPassword')\n            })\n        }\n    }).then(function (res) {\n        var json = res.json();\n        return json.token;\n    });\n}\n\n// Создаёт НОВУЮ запись booking при каждом вызове.\nfunction createFreshBooking(overrides) {\n    var bodyObj = buildBookingObject(overrides);\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json', 'Accept': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(bodyObj) }\n    }).then(function (res) {\n        var json = res.json();\n        return { id: json.bookingid, body: bodyObj, response: res, raw: json };\n    });\n}\n\n(async function () {\n    // TC35: валидный, предварительно созданный id -> 200 OK (ответ основного запроса)\n    pm.test('При запросе Get на эндпоинт /booking/id существующим id возвращается ответ 200 OK', function () {\n        pm.response.to.have.status(200);\n    });\n\n    // TC36: очень большое несуществующее число в id -> 404\n    var bigId = randomBigId();\n    var resBig = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking/' + bigId,\n        method: 'GET',\n        header: { Accept: 'application/json' }\n    });\n    pm.test('При запросе Get на эндпоинт /booking/id с НЕсуществующим id (очень большое число) возвращается ответ 404 Not found', function () {\n        pm.expect(resBig.code).to.eql(404);\n    });\n\n    // TC37: нечисловой id (\"abc\") -> 404\n    var resLetters = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking/abc',\n        method: 'GET',\n        header: { Accept: 'application/json' }\n    });\n    pm.test('При запросе Get на эндпоинт /booking/id с НЕсуществующим id (буквы) возвращается ответ 404 Not found', function () {\n        pm.expect(resLetters.code).to.eql(404);\n    });\n})();"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disabledSystemHeaders": {
+          "accept": true
+        }
+      },
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/booking/{{getBookingId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "booking",
+            "{{getBookingId}}"
+          ]
+        },
+        "description": "id подставляется динамически в Pre-request Script после создания новой тестовой записи booking. Все 3 тест-кейса по /booking/:id GET (TC35-TC37) реализованы во вкладке Tests."
+      },
+      "response": []
+    },
+    {
+      "name": "Booking - GetBookingIds",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ========================= ОБЩИЕ ХЕЛПЕРЫ (Collection Pre-request Script) =========================\n// Эти функции доступны в Pre-request script и Tests script КАЖДОГО запроса,\n// так как Postman выполняет их в одном JS-контексте для одного вызова запроса.\n\nfunction randInt(min, max) {\n    return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction pick(arr) {\n    return arr[randInt(0, arr.length - 1)];\n}\n\nfunction randomString(length) {\n    var chars = 'abcdefghijklmnopqrstuvwxyz';\n    var s = '';\n    for (var i = 0; i < length; i++) {\n        s += chars[randInt(0, chars.length - 1)];\n    }\n    return s;\n}\n\nfunction randomFirstName() {\n    var names = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Linda', 'Michael', 'Barbara', 'David', 'Elizabeth'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomLastName() {\n    var names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomTotalPrice() {\n    return randInt(10, 2000);\n}\n\nfunction randomDepositPaid() {\n    return Math.random() < 0.5;\n}\n\nfunction pad(n) {\n    return n < 10 ? '0' + n : '' + n;\n}\n\n// Возвращает дату в формате YYYY-MM-DD, смещённую от сегодняшней на случайное\n// число дней в диапазоне [startOffsetDays, endOffsetDays].\nfunction randomDate(startOffsetDays, endOffsetDays) {\n    var base = new Date();\n    var offset = randInt(startOffsetDays, endOffsetDays);\n    base.setDate(base.getDate() + offset);\n    return base.getFullYear() + '-' + pad(base.getMonth() + 1) + '-' + pad(base.getDate());\n}\n\nfunction randomBookingDates() {\n    var checkin = randomDate(1, 30);\n    var checkout = randomDate(31, 90);\n    return { checkin: checkin, checkout: checkout };\n}\n\nfunction randomAdditionalNeeds() {\n    return pick(['Breakfast', 'Dinner', 'Lunch', 'Late checkout', 'Extra towels', 'Parking']);\n}\n\nfunction randomInvalidToken() {\n    return randomString(15) + randomString(5);\n}\n\nfunction randomBigId() {\n    return randInt(900000000000, 999999999999);\n}\n\n// Строит динамическое валидное тело Booking со случайными данными.\n// overrides позволяет подменить/удалить конкретные поля под конкретный тест-кейс:\n//   { field: VALUE }        -> заменить значение поля\n//   { field: 'DELETE_FIELD__' }   -> удалить поле целиком\n//   { bookingdates: {...} } -> примешать/удалить вложенные поля checkin/checkout\nfunction buildBookingObject(overrides) {\n    var dates = randomBookingDates();\n    var obj = {\n        firstname: randomFirstName(),\n        lastname: randomLastName(),\n        totalprice: randomTotalPrice(),\n        depositpaid: randomDepositPaid(),\n        bookingdates: { checkin: dates.checkin, checkout: dates.checkout },\n        additionalneeds: randomAdditionalNeeds()\n    };\n    if (overrides) {\n        Object.keys(overrides).forEach(function (key) {\n            if (overrides[key] === 'DELETE_FIELD__') {\n                delete obj[key];\n            } else if (key === 'bookingdates' && typeof overrides[key] === 'object' && overrides[key] !== null) {\n                var merged = Object.assign({}, obj.bookingdates);\n                Object.keys(overrides[key]).forEach(function (subKey) {\n                    if (overrides[key][subKey] === 'DELETE_FIELD__') {\n                        delete merged[subKey];\n                    } else {\n                        merged[subKey] = overrides[key][subKey];\n                    }\n                });\n                obj.bookingdates = merged;\n            } else {\n                obj[key] = overrides[key];\n            }\n        });\n    }\n    return obj;\n}\n\nfunction buildBookingXml(obj) {\n    var xml = '<booking>\\n';\n    xml += '  <firstname>' + obj.firstname + '</firstname>\\n';\n    xml += '  <lastname>' + obj.lastname + '</lastname>\\n';\n    xml += '  <totalprice>' + obj.totalprice + '</totalprice>\\n';\n    xml += '  <depositpaid>' + obj.depositpaid + '</depositpaid>\\n';\n    xml += '  <bookingdates>\\n';\n    xml += '    <checkin>' + obj.bookingdates.checkin + '</checkin>\\n';\n    xml += '    <checkout>' + obj.bookingdates.checkout + '</checkout>\\n';\n    xml += '  </bookingdates>\\n';\n    if (obj.additionalneeds !== undefined) {\n        xml += '  <additionalneeds>' + obj.additionalneeds + '</additionalneeds>\\n';\n    }\n    xml += '</booking>';\n    return xml;\n}\n\n// pm.sendRequest возвращает Promise, если не передан callback (Postman v10+).\nfunction sendRequestAsync(requestConfig) {\n    return pm.sendRequest(requestConfig);\n}\n\n// Получает НОВЫЙ токен при каждом вызове (требование независимости тестов).\nfunction getFreshToken(username, password) {\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: {\n            mode: 'raw',\n            raw: JSON.stringify({\n                username: username || pm.collectionVariables.get('validUsername'),\n                password: password || pm.collectionVariables.get('validPassword')\n            })\n        }\n    }).then(function (res) {\n        var json = res.json();\n        return json.token;\n    });\n}\n\n// Создаёт НОВУЮ запись booking при каждом вызове (требование независимости тестов).\nfunction createFreshBooking(overrides) {\n    var bodyObj = buildBookingObject(overrides);\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json', 'Accept': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(bodyObj) }\n    }).then(function (res) {\n        var json = res.json();\n        return { id: json.bookingid, body: bodyObj, response: res, raw: json };\n    });\n}\n\n// Предусловие TC38/39: создаём новую запись booking и используем её параметры в query.\n(async function () {\n    try {\n        var created = await createFreshBooking();\n        pm.variables.set('searchBookingId', created.id);\n        pm.variables.set('searchFirstname', created.body.firstname);\n        pm.variables.set('searchLastname', created.body.lastname);\n        pm.variables.set('searchCheckin', created.body.bookingdates.checkin);\n        pm.variables.set('searchCheckout', created.body.bookingdates.checkout);\n    } catch (e) {\n        console.log('[GetBookingIds pre-request] Не удалось создать booking: ' + e.message);\n    }\n})();"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function randInt(min, max) {\n    return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction pick(arr) {\n    return arr[randInt(0, arr.length - 1)];\n}\n\nfunction randomString(length) {\n    var chars = 'abcdefghijklmnopqrstuvwxyz';\n    var s = '';\n    for (var i = 0; i < length; i++) {\n        s += chars[randInt(0, chars.length - 1)];\n    }\n    return s;\n}\n\nfunction randomFirstName() {\n    var names = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Linda', 'Michael', 'Barbara', 'David', 'Elizabeth'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomLastName() {\n    var names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomTotalPrice() {\n    return randInt(10, 2000);\n}\n\nfunction randomDepositPaid() {\n    return Math.random() < 0.5;\n}\n\nfunction pad(n) {\n    return n < 10 ? '0' + n : '' + n;\n}\n\n// Возвращает дату в формате YYYY-MM-DD, смещённую от сегодняшней на случайное\n// число дней в диапазоне [startOffsetDays, endOffsetDays].\nfunction randomDate(startOffsetDays, endOffsetDays) {\n    var base = new Date();\n    var offset = randInt(startOffsetDays, endOffsetDays);\n    base.setDate(base.getDate() + offset);\n    return base.getFullYear() + '-' + pad(base.getMonth() + 1) + '-' + pad(base.getDate());\n}\n\nfunction randomBookingDates() {\n    var checkin = randomDate(1, 30);\n    var checkout = randomDate(31, 90);\n    return { checkin: checkin, checkout: checkout };\n}\n\nfunction randomAdditionalNeeds() {\n    return pick(['Breakfast', 'Dinner', 'Lunch', 'Late checkout', 'Extra towels', 'Parking']);\n}\n\nfunction randomInvalidToken() {\n    return randomString(15) + randomString(5);\n}\n\nfunction randomBigId() {\n    return randInt(900000000000, 999999999999);\n}\n\n// Строит динамическое валидное тело Booking со случайными данными.\n// overrides позволяет подменить/удалить конкретные поля под конкретный тест-кейс:\n//   { field: VALUE }        -> заменить значение поля\n//   { field: 'DELETE_FIELD__' }   -> удалить поле целиком\n//   { bookingdates: {...} } -> примешать/удалить вложенные поля checkin/checkout\nfunction buildBookingObject(overrides) {\n    var dates = randomBookingDates();\n    var obj = {\n        firstname: randomFirstName(),\n        lastname: randomLastName(),\n        totalprice: randomTotalPrice(),\n        depositpaid: randomDepositPaid(),\n        bookingdates: { checkin: dates.checkin, checkout: dates.checkout },\n        additionalneeds: randomAdditionalNeeds()\n    };\n    if (overrides) {\n        Object.keys(overrides).forEach(function (key) {\n            if (overrides[key] === 'DELETE_FIELD__') {\n                delete obj[key];\n            } else if (key === 'bookingdates' && typeof overrides[key] === 'object' && overrides[key] !== null) {\n                var merged = Object.assign({}, obj.bookingdates);\n                Object.keys(overrides[key]).forEach(function (subKey) {\n                    if (overrides[key][subKey] === 'DELETE_FIELD__') {\n                        delete merged[subKey];\n                    } else {\n                        merged[subKey] = overrides[key][subKey];\n                    }\n                });\n                obj.bookingdates = merged;\n            } else {\n                obj[key] = overrides[key];\n            }\n        });\n    }\n    return obj;\n}\n\nfunction buildBookingXml(obj) {\n    var xml = '<booking>\\n';\n    xml += '  <firstname>' + obj.firstname + '</firstname>\\n';\n    xml += '  <lastname>' + obj.lastname + '</lastname>\\n';\n    xml += '  <totalprice>' + obj.totalprice + '</totalprice>\\n';\n    xml += '  <depositpaid>' + obj.depositpaid + '</depositpaid>\\n';\n    xml += '  <bookingdates>\\n';\n    xml += '    <checkin>' + obj.bookingdates.checkin + '</checkin>\\n';\n    xml += '    <checkout>' + obj.bookingdates.checkout + '</checkout>\\n';\n    xml += '  </bookingdates>\\n';\n    if (obj.additionalneeds !== undefined) {\n        xml += '  <additionalneeds>' + obj.additionalneeds + '</additionalneeds>\\n';\n    }\n    xml += '</booking>';\n    return xml;\n}\n\n// pm.sendRequest возвращает Promise, если не передан callback.\nfunction sendRequestAsync(requestConfig) {\n    return pm.sendRequest(requestConfig);\n}\n\n// Получает НОВЫЙ токен при каждом вызове.\nfunction getFreshToken(username, password) {\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: {\n            mode: 'raw',\n            raw: JSON.stringify({\n                username: username || pm.collectionVariables.get('validUsername'),\n                password: password || pm.collectionVariables.get('validPassword')\n            })\n        }\n    }).then(function (res) {\n        var json = res.json();\n        return json.token;\n    });\n}\n\n// Создаёт НОВУЮ запись booking при каждом вызове.\nfunction createFreshBooking(overrides) {\n    var bodyObj = buildBookingObject(overrides);\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json', 'Accept': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(bodyObj) }\n    }).then(function (res) {\n        var json = res.json();\n        return { id: json.bookingid, body: bodyObj, response: res, raw: json };\n    });\n}\n\n(async function () {\n    // TC38: валидные параметры существующей записи -> 200 OK (ответ основного запроса)\n    pm.test('При запросе Get на эндпоинт /booking с валидными параметрами существующей записи \"firstname\", \"lastname\", \"checkin\", \"checkout\" возвращается ответ 200 OK', function () {\n        pm.response.to.have.status(200);\n    });\n\n    // TC39: тело ответа содержит id созданной в предусловии записи\n    pm.test('При запросе Get на эндпоинт /booking с валидными параметрами существующей записи \"firstname\", \"lastname\", \"checkin\", \"checkout\" возвращается тело ответа с массивом словарей [ {\"bookingid\": id}], где есть id = id созданной в предусловии записи', function () {\n        var ids = pm.response.json().map(function (item) { return item.bookingid; });\n        pm.expect(ids).to.include(Number(pm.variables.get('searchBookingId')));\n    });\n\n    // Создает новую запись (независимо от других тестов) и выполняет поиск без одного параметра.\n    async function searchAndCheck(summary, paramsToOmit) {\n        var created = await createFreshBooking();\n        var params = {\n            firstname: created.body.firstname,\n            lastname: created.body.lastname,\n            checkin: created.body.bookingdates.checkin,\n            checkout: created.body.bookingdates.checkout\n        };\n        paramsToOmit.forEach(function (p) { delete params[p]; });\n        var qs = Object.keys(params).map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');\n        var res = await sendRequestAsync({\n            url: pm.collectionVariables.get('baseUrl') + '/booking?' + qs,\n            method: 'GET'\n        });\n        pm.test(summary, function () {\n            var ids = res.json().map(function (item) { return item.bookingid; });\n            pm.expect(ids).to.include(created.id);\n        });\n    }\n\n    // TC40: без firstname\n    await searchAndCheck('При запросе Get на эндпоинт /booking с валидными параметрами существующей записи \"lastname\", \"checkin\", \"checkout\" (БЕЗ \"firstname\") возвращается тело ответа с массивом словарей [ {\"bookingid\": id}], где есть id = id созданной в предусловии записи', ['firstname']);\n\n    var tokenForTc41 = await getFreshToken();\n    var createdTc41 = await createFreshBooking();\n    var paramsTc41 = {\n        firstname: createdTc41.body.firstname,\n        checkin: createdTc41.body.bookingdates.checkin,\n        checkout: createdTc41.body.bookingdates.checkout\n    };\n    var qsTc41 = Object.keys(paramsTc41).map(function (k) { return k + '=' + encodeURIComponent(paramsTc41[k]); }).join('&');\n    var resTc41 = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking?' + qsTc41,\n        method: 'GET',\n        header: { Cookie: 'token=' + tokenForTc41 }\n    });\n    pm.test('При запросе Get на эндпоинт /booking с валидными параметрами существующей записи \"firstname\", \"checkin\", \"checkout\" (БЕЗ \"lastname\") возвращается тело ответа с массивом словарей [ {\"bookingid\": id}], где есть id = id созданной в предусловии записи', function () {\n        var ids = resTc41.json().map(function (item) { return item.bookingid; });\n        pm.expect(ids).to.include(createdTc41.id);\n    });\n\n    // TC42: без checkin\n    await searchAndCheck('При запросе Get на эндпоинт /booking с валидными параметрами существующей записи \"firstname\", \"lastname\", \"checkout\" (БЕЗ \"checkin\") возвращается тело ответа с массивом словарей [ {\"bookingid\": id}], где есть id = id созданной в предусловии записи', ['checkin']);\n\n    // TC43: без checkout\n    await searchAndCheck('При запросе Get на эндпоинт /booking с валидными параметрами существующей записи \"firstname\", \"lastname\", \"checkin\" (БЕЗ \"checkout\") возвращается тело ответа с массивом словарей [ {\"bookingid\": id}], где есть id = id созданной в предусловии записи', ['checkout']);\n})();"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/booking?firstname={{searchFirstname}}&lastname={{searchLastname}}&checkin={{searchCheckin}}&checkout={{searchCheckout}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "booking"
+          ],
+          "query": [
+            {
+              "key": "firstname",
+              "value": "{{searchFirstname}}"
+            },
+            {
+              "key": "lastname",
+              "value": "{{searchLastname}}"
+            },
+            {
+              "key": "checkin",
+              "value": "{{searchCheckin}}"
+            },
+            {
+              "key": "checkout",
+              "value": "{{searchCheckout}}"
+            }
+          ]
+        },
+        "description": "Query-параметры подставляются динамически в Pre-request Script из свежесозданной записи booking. Все 7 тест-кейсов по /booking GET (TC38-TC44) реализованы во вкладке Tests."
+      },
+      "response": []
+    },
+    {
+      "name": "Booking - UpdateBooking",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ========================= ОБЩИЕ ХЕЛПЕРЫ (Collection Pre-request Script) =========================\n// Эти функции доступны в Pre-request script и Tests script КАЖДОГО запроса,\n// так как Postman выполняет их в одном JS-контексте для одного вызова запроса.\n\nfunction randInt(min, max) {\n    return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction pick(arr) {\n    return arr[randInt(0, arr.length - 1)];\n}\n\nfunction randomString(length) {\n    var chars = 'abcdefghijklmnopqrstuvwxyz';\n    var s = '';\n    for (var i = 0; i < length; i++) {\n        s += chars[randInt(0, chars.length - 1)];\n    }\n    return s;\n}\n\nfunction randomFirstName() {\n    var names = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Linda', 'Michael', 'Barbara', 'David', 'Elizabeth'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomLastName() {\n    var names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomTotalPrice() {\n    return randInt(10, 2000);\n}\n\nfunction randomDepositPaid() {\n    return Math.random() < 0.5;\n}\n\nfunction pad(n) {\n    return n < 10 ? '0' + n : '' + n;\n}\n\n// Возвращает дату в формате YYYY-MM-DD, смещённую от сегодняшней на случайное\n// число дней в диапазоне [startOffsetDays, endOffsetDays].\nfunction randomDate(startOffsetDays, endOffsetDays) {\n    var base = new Date();\n    var offset = randInt(startOffsetDays, endOffsetDays);\n    base.setDate(base.getDate() + offset);\n    return base.getFullYear() + '-' + pad(base.getMonth() + 1) + '-' + pad(base.getDate());\n}\n\nfunction randomBookingDates() {\n    var checkin = randomDate(1, 30);\n    var checkout = randomDate(31, 90);\n    return { checkin: checkin, checkout: checkout };\n}\n\nfunction randomAdditionalNeeds() {\n    return pick(['Breakfast', 'Dinner', 'Lunch', 'Late checkout', 'Extra towels', 'Parking']);\n}\n\nfunction randomInvalidToken() {\n    return randomString(15) + randomString(5);\n}\n\nfunction randomBigId() {\n    return randInt(900000000000, 999999999999);\n}\n\n// Строит динамическое валидное тело Booking со случайными данными.\n// overrides позволяет подменить/удалить конкретные поля под конкретный тест-кейс:\n//   { field: VALUE }        -> заменить значение поля\n//   { field: 'DELETE_FIELD__' }   -> удалить поле целиком\n//   { bookingdates: {...} } -> примешать/удалить вложенные поля checkin/checkout\nfunction buildBookingObject(overrides) {\n    var dates = randomBookingDates();\n    var obj = {\n        firstname: randomFirstName(),\n        lastname: randomLastName(),\n        totalprice: randomTotalPrice(),\n        depositpaid: randomDepositPaid(),\n        bookingdates: { checkin: dates.checkin, checkout: dates.checkout },\n        additionalneeds: randomAdditionalNeeds()\n    };\n    if (overrides) {\n        Object.keys(overrides).forEach(function (key) {\n            if (overrides[key] === 'DELETE_FIELD__') {\n                delete obj[key];\n            } else if (key === 'bookingdates' && typeof overrides[key] === 'object' && overrides[key] !== null) {\n                var merged = Object.assign({}, obj.bookingdates);\n                Object.keys(overrides[key]).forEach(function (subKey) {\n                    if (overrides[key][subKey] === 'DELETE_FIELD__') {\n                        delete merged[subKey];\n                    } else {\n                        merged[subKey] = overrides[key][subKey];\n                    }\n                });\n                obj.bookingdates = merged;\n            } else {\n                obj[key] = overrides[key];\n            }\n        });\n    }\n    return obj;\n}\n\nfunction buildBookingXml(obj) {\n    var xml = '<booking>\\n';\n    xml += '  <firstname>' + obj.firstname + '</firstname>\\n';\n    xml += '  <lastname>' + obj.lastname + '</lastname>\\n';\n    xml += '  <totalprice>' + obj.totalprice + '</totalprice>\\n';\n    xml += '  <depositpaid>' + obj.depositpaid + '</depositpaid>\\n';\n    xml += '  <bookingdates>\\n';\n    xml += '    <checkin>' + obj.bookingdates.checkin + '</checkin>\\n';\n    xml += '    <checkout>' + obj.bookingdates.checkout + '</checkout>\\n';\n    xml += '  </bookingdates>\\n';\n    if (obj.additionalneeds !== undefined) {\n        xml += '  <additionalneeds>' + obj.additionalneeds + '</additionalneeds>\\n';\n    }\n    xml += '</booking>';\n    return xml;\n}\n\n// pm.sendRequest возвращает Promise, если не передан callback (Postman v10+).\nfunction sendRequestAsync(requestConfig) {\n    return pm.sendRequest(requestConfig);\n}\n\n// Получает НОВЫЙ токен при каждом вызове (требование независимости тестов).\nfunction getFreshToken(username, password) {\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: {\n            mode: 'raw',\n            raw: JSON.stringify({\n                username: username || pm.collectionVariables.get('validUsername'),\n                password: password || pm.collectionVariables.get('validPassword')\n            })\n        }\n    }).then(function (res) {\n        var json = res.json();\n        return json.token;\n    });\n}\n\n// Создаёт НОВУЮ запись booking при каждом вызове (требование независимости тестов).\nfunction createFreshBooking(overrides) {\n    var bodyObj = buildBookingObject(overrides);\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json', 'Accept': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(bodyObj) }\n    }).then(function (res) {\n        var json = res.json();\n        return { id: json.bookingid, body: bodyObj, response: res, raw: json };\n    });\n}\n\n// Предусловие TC45/46: получить токен, создать новую запись booking, подготовить тело обновления.\n(async function () {\n    try {\n        var token = await getFreshToken();\n        var created = await createFreshBooking();\n        var updateBody = buildBookingObject();\n        pm.variables.set('putToken', token);\n        pm.variables.set('putBookingId', created.id);\n        pm.variables.set('putBodyJson', JSON.stringify(updateBody, null, 4));\n    } catch (e) {\n        console.log('[UpdateBooking pre-request] Ошибка подготовки: ' + e.message);\n    }\n})();"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function randInt(min, max) {\n    return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction pick(arr) {\n    return arr[randInt(0, arr.length - 1)];\n}\n\nfunction randomString(length) {\n    var chars = 'abcdefghijklmnopqrstuvwxyz';\n    var s = '';\n    for (var i = 0; i < length; i++) {\n        s += chars[randInt(0, chars.length - 1)];\n    }\n    return s;\n}\n\nfunction randomFirstName() {\n    var names = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Linda', 'Michael', 'Barbara', 'David', 'Elizabeth'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomLastName() {\n    var names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomTotalPrice() {\n    return randInt(10, 2000);\n}\n\nfunction randomDepositPaid() {\n    return Math.random() < 0.5;\n}\n\nfunction pad(n) {\n    return n < 10 ? '0' + n : '' + n;\n}\n\n// Возвращает дату в формате YYYY-MM-DD, смещённую от сегодняшней на случайное\n// число дней в диапазоне [startOffsetDays, endOffsetDays].\nfunction randomDate(startOffsetDays, endOffsetDays) {\n    var base = new Date();\n    var offset = randInt(startOffsetDays, endOffsetDays);\n    base.setDate(base.getDate() + offset);\n    return base.getFullYear() + '-' + pad(base.getMonth() + 1) + '-' + pad(base.getDate());\n}\n\nfunction randomBookingDates() {\n    var checkin = randomDate(1, 30);\n    var checkout = randomDate(31, 90);\n    return { checkin: checkin, checkout: checkout };\n}\n\nfunction randomAdditionalNeeds() {\n    return pick(['Breakfast', 'Dinner', 'Lunch', 'Late checkout', 'Extra towels', 'Parking']);\n}\n\nfunction randomInvalidToken() {\n    return randomString(15) + randomString(5);\n}\n\nfunction randomBigId() {\n    return randInt(900000000000, 999999999999);\n}\n\n// Строит динамическое валидное тело Booking со случайными данными.\n// overrides позволяет подменить/удалить конкретные поля под конкретный тест-кейс:\n//   { field: VALUE }        -> заменить значение поля\n//   { field: 'DELETE_FIELD__' }   -> удалить поле целиком\n//   { bookingdates: {...} } -> примешать/удалить вложенные поля checkin/checkout\nfunction buildBookingObject(overrides) {\n    var dates = randomBookingDates();\n    var obj = {\n        firstname: randomFirstName(),\n        lastname: randomLastName(),\n        totalprice: randomTotalPrice(),\n        depositpaid: randomDepositPaid(),\n        bookingdates: { checkin: dates.checkin, checkout: dates.checkout },\n        additionalneeds: randomAdditionalNeeds()\n    };\n    if (overrides) {\n        Object.keys(overrides).forEach(function (key) {\n            if (overrides[key] === 'DELETE_FIELD__') {\n                delete obj[key];\n            } else if (key === 'bookingdates' && typeof overrides[key] === 'object' && overrides[key] !== null) {\n                var merged = Object.assign({}, obj.bookingdates);\n                Object.keys(overrides[key]).forEach(function (subKey) {\n                    if (overrides[key][subKey] === 'DELETE_FIELD__') {\n                        delete merged[subKey];\n                    } else {\n                        merged[subKey] = overrides[key][subKey];\n                    }\n                });\n                obj.bookingdates = merged;\n            } else {\n                obj[key] = overrides[key];\n            }\n        });\n    }\n    return obj;\n}\n\nfunction buildBookingXml(obj) {\n    var xml = '<booking>\\n';\n    xml += '  <firstname>' + obj.firstname + '</firstname>\\n';\n    xml += '  <lastname>' + obj.lastname + '</lastname>\\n';\n    xml += '  <totalprice>' + obj.totalprice + '</totalprice>\\n';\n    xml += '  <depositpaid>' + obj.depositpaid + '</depositpaid>\\n';\n    xml += '  <bookingdates>\\n';\n    xml += '    <checkin>' + obj.bookingdates.checkin + '</checkin>\\n';\n    xml += '    <checkout>' + obj.bookingdates.checkout + '</checkout>\\n';\n    xml += '  </bookingdates>\\n';\n    if (obj.additionalneeds !== undefined) {\n        xml += '  <additionalneeds>' + obj.additionalneeds + '</additionalneeds>\\n';\n    }\n    xml += '</booking>';\n    return xml;\n}\n\n// pm.sendRequest возвращает Promise, если не передан callback.\nfunction sendRequestAsync(requestConfig) {\n    return pm.sendRequest(requestConfig);\n}\n\n// Получает НОВЫЙ токен при каждом вызове.\nfunction getFreshToken(username, password) {\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: {\n            mode: 'raw',\n            raw: JSON.stringify({\n                username: username || pm.collectionVariables.get('validUsername'),\n                password: password || pm.collectionVariables.get('validPassword')\n            })\n        }\n    }).then(function (res) {\n        var json = res.json();\n        return json.token;\n    });\n}\n\n// Создаёт НОВУЮ запись booking при каждом вызове.\nfunction createFreshBooking(overrides) {\n    var bodyObj = buildBookingObject(overrides);\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json', 'Accept': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(bodyObj) }\n    }).then(function (res) {\n        var json = res.json();\n        return { id: json.bookingid, body: bodyObj, response: res, raw: json };\n    });\n}\n\n(async function () {\n    // TC45: валидный id + валидный токен + валидный JSON -> 200 OK (ответ основного запроса)\n    pm.test('При запросе Put на эндпоинт /booking/id, где id = id из созданной предварительно записи, с валидным JSON в теле запроса возвращается код 200 OK', function () {\n        pm.response.to.have.status(200);\n    });\n\n    // TC46: тело ответа содержит изменённые данные из запроса\n    pm.test('При запросе Put на эндпоинт /booking/id с валидным id, с валидным JSON в body возвращается тело ответа, в котором указан измененный JSON с данными из тела запроса', function () {\n        var sentBody = JSON.parse(pm.variables.get('putBodyJson'));\n        pm.expect(pm.response.json()).to.eql(sentBody);\n    });\n\n    // TC47: без токена -> 403 (своя новая запись)\n    var createdNoToken = await createFreshBooking();\n    var resNoToken = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking/' + createdNoToken.id,\n        method: 'PUT',\n        header: { 'Content-Type': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(buildBookingObject()) }\n    });\n    pm.test('При запросе Put на эндпоинт /booking/id с валидным id, с валидным JSON в body БЕЗ токена возвращается ответ с кодом 403 Forbidden', function () {\n        pm.expect(resNoToken.code).to.eql(403);\n    });\n\n    // TC48: невалидный токен -> 403 (своя новая запись)\n    var createdBadToken = await createFreshBooking();\n    var resBadToken = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking/' + createdBadToken.id,\n        method: 'PUT',\n        header: { 'Content-Type': 'application/json', Cookie: 'token=' + randomInvalidToken() },\n        body: { mode: 'raw', raw: JSON.stringify(buildBookingObject()) }\n    });\n    pm.test('При запросе Put на эндпоинт /booking/id с валидным id, с валидным JSON в body с невалидным токененом возвращается ответ с кодом 403 Forbidden', function () {\n        pm.expect(resBadToken.code).to.eql(403);\n    });\n\n    // PUT с заведомо невалидным (неполным) телом -> ожидаем 400. Токен и запись -- свои на каждый вызов.\n    async function expectInvalidUpdate(summary, overrides) {\n        var token = await getFreshToken();\n        var created = await createFreshBooking();\n        var res = await sendRequestAsync({\n            url: pm.collectionVariables.get('baseUrl') + '/booking/' + created.id,\n            method: 'PUT',\n            header: { 'Content-Type': 'application/json', Cookie: 'token=' + token },\n            body: { mode: 'raw', raw: JSON.stringify(buildBookingObject(overrides)) }\n        });\n        pm.test(summary, function () {\n            pm.expect(res.code).to.eql(400);\n        });\n    }\n\n    await expectInvalidUpdate('При запросе Put на эндпоинт /booking/id с валидным id, но с НЕвалидным JSON (отсутсвует lastname) возвращается ответ с кодом 400 Bad request', { lastname: 'DELETE_FIELD__' });\n    await expectInvalidUpdate('При запросе Put на эндпоинт /booking/id с валидным id, но с НЕвалидным JSON (отсутсвует totalprice) возвращается ответ с кодом 400 Bad request', { totalprice: 'DELETE_FIELD__' });\n    await expectInvalidUpdate('При запросе Put на эндпоинт /booking/id с валидным id, но с НЕвалидным JSON (отсутсвует depositpaid) возвращается ответ с кодом 400 Bad request', { depositpaid: 'DELETE_FIELD__' });\n    await expectInvalidUpdate('При запросе Put на эндпоинт /booking/id с валидным id, но с НЕвалидным JSON (отсутсвует checkin) возвращается ответ с кодом 400 Bad request', { bookingdates: { checkin: 'DELETE_FIELD__' } });\n    await expectInvalidUpdate('При запросе Put на эндпоинт /booking/id с валидным id, но с НЕвалидным JSON (отсутсвует checkout) возвращается ответ с кодом 400 Bad request', { bookingdates: { checkout: 'DELETE_FIELD__' } });\n\n    // TC54: невалидный (несуществующий) id -> 400\n    var tokenTc54 = await getFreshToken();\n    var resInvalidId = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking/' + randomBigId(),\n        method: 'PUT',\n        header: { 'Content-Type': 'application/json', Cookie: 'token=' + tokenTc54 },\n        body: { mode: 'raw', raw: JSON.stringify(buildBookingObject()) }\n    });\n    pm.test('При запросе Put на эндпоинт /booking/id с НЕвалидным id возвращается ответ с кодом 400 Bad request', function () {\n        pm.expect(resInvalidId.code).to.eql(400);\n    });\n})();"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Cookie",
+            "value": "token={{putToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{putBodyJson}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/booking/{{putBookingId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "booking",
+            "{{putBookingId}}"
+          ]
+        },
+        "description": "Токен, id записи и тело запроса генерируются динамически в Pre-request Script (своя новая запись и свой новый токен при каждом запуске). Все 10 тест-кейсов по /booking/:id PUT (TC45-TC54) реализованы во вкладке Tests."
+      },
+      "response": []
+    },
+    {
+      "name": "Booking - PartialUpdateBooking",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ========================= ОБЩИЕ ХЕЛПЕРЫ (Collection Pre-request Script) =========================\n// Эти функции доступны в Pre-request script и Tests script КАЖДОГО запроса,\n// так как Postman выполняет их в одном JS-контексте для одного вызова запроса.\n\nfunction randInt(min, max) {\n    return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction pick(arr) {\n    return arr[randInt(0, arr.length - 1)];\n}\n\nfunction randomString(length) {\n    var chars = 'abcdefghijklmnopqrstuvwxyz';\n    var s = '';\n    for (var i = 0; i < length; i++) {\n        s += chars[randInt(0, chars.length - 1)];\n    }\n    return s;\n}\n\nfunction randomFirstName() {\n    var names = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Linda', 'Michael', 'Barbara', 'David', 'Elizabeth'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomLastName() {\n    var names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomTotalPrice() {\n    return randInt(10, 2000);\n}\n\nfunction randomDepositPaid() {\n    return Math.random() < 0.5;\n}\n\nfunction pad(n) {\n    return n < 10 ? '0' + n : '' + n;\n}\n\n// Возвращает дату в формате YYYY-MM-DD, смещённую от сегодняшней на случайное\n// число дней в диапазоне [startOffsetDays, endOffsetDays].\nfunction randomDate(startOffsetDays, endOffsetDays) {\n    var base = new Date();\n    var offset = randInt(startOffsetDays, endOffsetDays);\n    base.setDate(base.getDate() + offset);\n    return base.getFullYear() + '-' + pad(base.getMonth() + 1) + '-' + pad(base.getDate());\n}\n\nfunction randomBookingDates() {\n    var checkin = randomDate(1, 30);\n    var checkout = randomDate(31, 90);\n    return { checkin: checkin, checkout: checkout };\n}\n\nfunction randomAdditionalNeeds() {\n    return pick(['Breakfast', 'Dinner', 'Lunch', 'Late checkout', 'Extra towels', 'Parking']);\n}\n\nfunction randomInvalidToken() {\n    return randomString(15) + randomString(5);\n}\n\nfunction randomBigId() {\n    return randInt(900000000000, 999999999999);\n}\n\n// Строит динамическое валидное тело Booking со случайными данными.\n// overrides позволяет подменить/удалить конкретные поля под конкретный тест-кейс:\n//   { field: VALUE }        -> заменить значение поля\n//   { field: 'DELETE_FIELD__' }   -> удалить поле целиком\n//   { bookingdates: {...} } -> примешать/удалить вложенные поля checkin/checkout\nfunction buildBookingObject(overrides) {\n    var dates = randomBookingDates();\n    var obj = {\n        firstname: randomFirstName(),\n        lastname: randomLastName(),\n        totalprice: randomTotalPrice(),\n        depositpaid: randomDepositPaid(),\n        bookingdates: { checkin: dates.checkin, checkout: dates.checkout },\n        additionalneeds: randomAdditionalNeeds()\n    };\n    if (overrides) {\n        Object.keys(overrides).forEach(function (key) {\n            if (overrides[key] === 'DELETE_FIELD__') {\n                delete obj[key];\n            } else if (key === 'bookingdates' && typeof overrides[key] === 'object' && overrides[key] !== null) {\n                var merged = Object.assign({}, obj.bookingdates);\n                Object.keys(overrides[key]).forEach(function (subKey) {\n                    if (overrides[key][subKey] === 'DELETE_FIELD__') {\n                        delete merged[subKey];\n                    } else {\n                        merged[subKey] = overrides[key][subKey];\n                    }\n                });\n                obj.bookingdates = merged;\n            } else {\n                obj[key] = overrides[key];\n            }\n        });\n    }\n    return obj;\n}\n\nfunction buildBookingXml(obj) {\n    var xml = '<booking>\\n';\n    xml += '  <firstname>' + obj.firstname + '</firstname>\\n';\n    xml += '  <lastname>' + obj.lastname + '</lastname>\\n';\n    xml += '  <totalprice>' + obj.totalprice + '</totalprice>\\n';\n    xml += '  <depositpaid>' + obj.depositpaid + '</depositpaid>\\n';\n    xml += '  <bookingdates>\\n';\n    xml += '    <checkin>' + obj.bookingdates.checkin + '</checkin>\\n';\n    xml += '    <checkout>' + obj.bookingdates.checkout + '</checkout>\\n';\n    xml += '  </bookingdates>\\n';\n    if (obj.additionalneeds !== undefined) {\n        xml += '  <additionalneeds>' + obj.additionalneeds + '</additionalneeds>\\n';\n    }\n    xml += '</booking>';\n    return xml;\n}\n\n// pm.sendRequest возвращает Promise, если не передан callback (Postman v10+).\nfunction sendRequestAsync(requestConfig) {\n    return pm.sendRequest(requestConfig);\n}\n\n// Получает НОВЫЙ токен при каждом вызове (требование независимости тестов).\nfunction getFreshToken(username, password) {\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: {\n            mode: 'raw',\n            raw: JSON.stringify({\n                username: username || pm.collectionVariables.get('validUsername'),\n                password: password || pm.collectionVariables.get('validPassword')\n            })\n        }\n    }).then(function (res) {\n        var json = res.json();\n        return json.token;\n    });\n}\n\n// Создаёт НОВУЮ запись booking при каждом вызове (требование независимости тестов).\nfunction createFreshBooking(overrides) {\n    var bodyObj = buildBookingObject(overrides);\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json', 'Accept': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(bodyObj) }\n    }).then(function (res) {\n        var json = res.json();\n        return { id: json.bookingid, body: bodyObj, response: res, raw: json };\n    });\n}\n\n// Предусловие TC55: получить токен, создать новую запись booking, подготовить полное тело обновления.\n(async function () {\n    try {\n        var token = await getFreshToken();\n        var created = await createFreshBooking();\n        var fullPatchBody = buildBookingObject();\n        pm.variables.set('patchToken', token);\n        pm.variables.set('patchBookingId', created.id);\n        pm.variables.set('patchBodyJson', JSON.stringify(fullPatchBody, null, 4));\n    } catch (e) {\n        console.log('[PartialUpdateBooking pre-request] Ошибка подготовки: ' + e.message);\n    }\n})();"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function randInt(min, max) {\n    return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction pick(arr) {\n    return arr[randInt(0, arr.length - 1)];\n}\n\nfunction randomString(length) {\n    var chars = 'abcdefghijklmnopqrstuvwxyz';\n    var s = '';\n    for (var i = 0; i < length; i++) {\n        s += chars[randInt(0, chars.length - 1)];\n    }\n    return s;\n}\n\nfunction randomFirstName() {\n    var names = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Linda', 'Michael', 'Barbara', 'David', 'Elizabeth'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomLastName() {\n    var names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];\n    return pick(names) + '_' + randomString(5);\n}\n\nfunction randomTotalPrice() {\n    return randInt(10, 2000);\n}\n\nfunction randomDepositPaid() {\n    return Math.random() < 0.5;\n}\n\nfunction pad(n) {\n    return n < 10 ? '0' + n : '' + n;\n}\n\n// Возвращает дату в формате YYYY-MM-DD, смещённую от сегодняшней на случайное\n// число дней в диапазоне [startOffsetDays, endOffsetDays].\nfunction randomDate(startOffsetDays, endOffsetDays) {\n    var base = new Date();\n    var offset = randInt(startOffsetDays, endOffsetDays);\n    base.setDate(base.getDate() + offset);\n    return base.getFullYear() + '-' + pad(base.getMonth() + 1) + '-' + pad(base.getDate());\n}\n\nfunction randomBookingDates() {\n    var checkin = randomDate(1, 30);\n    var checkout = randomDate(31, 90);\n    return { checkin: checkin, checkout: checkout };\n}\n\nfunction randomAdditionalNeeds() {\n    return pick(['Breakfast', 'Dinner', 'Lunch', 'Late checkout', 'Extra towels', 'Parking']);\n}\n\nfunction randomInvalidToken() {\n    return randomString(15) + randomString(5);\n}\n\nfunction randomBigId() {\n    return randInt(900000000000, 999999999999);\n}\n\n// Строит динамическое валидное тело Booking со случайными данными.\n// overrides позволяет подменить/удалить конкретные поля под конкретный тест-кейс:\n//   { field: VALUE }        -> заменить значение поля\n//   { field: 'DELETE_FIELD__' }   -> удалить поле целиком\n//   { bookingdates: {...} } -> примешать/удалить вложенные поля checkin/checkout\nfunction buildBookingObject(overrides) {\n    var dates = randomBookingDates();\n    var obj = {\n        firstname: randomFirstName(),\n        lastname: randomLastName(),\n        totalprice: randomTotalPrice(),\n        depositpaid: randomDepositPaid(),\n        bookingdates: { checkin: dates.checkin, checkout: dates.checkout },\n        additionalneeds: randomAdditionalNeeds()\n    };\n    if (overrides) {\n        Object.keys(overrides).forEach(function (key) {\n            if (overrides[key] === 'DELETE_FIELD__') {\n                delete obj[key];\n            } else if (key === 'bookingdates' && typeof overrides[key] === 'object' && overrides[key] !== null) {\n                var merged = Object.assign({}, obj.bookingdates);\n                Object.keys(overrides[key]).forEach(function (subKey) {\n                    if (overrides[key][subKey] === 'DELETE_FIELD__') {\n                        delete merged[subKey];\n                    } else {\n                        merged[subKey] = overrides[key][subKey];\n                    }\n                });\n                obj.bookingdates = merged;\n            } else {\n                obj[key] = overrides[key];\n            }\n        });\n    }\n    return obj;\n}\n\nfunction buildBookingXml(obj) {\n    var xml = '<booking>\\n';\n    xml += '  <firstname>' + obj.firstname + '</firstname>\\n';\n    xml += '  <lastname>' + obj.lastname + '</lastname>\\n';\n    xml += '  <totalprice>' + obj.totalprice + '</totalprice>\\n';\n    xml += '  <depositpaid>' + obj.depositpaid + '</depositpaid>\\n';\n    xml += '  <bookingdates>\\n';\n    xml += '    <checkin>' + obj.bookingdates.checkin + '</checkin>\\n';\n    xml += '    <checkout>' + obj.bookingdates.checkout + '</checkout>\\n';\n    xml += '  </bookingdates>\\n';\n    if (obj.additionalneeds !== undefined) {\n        xml += '  <additionalneeds>' + obj.additionalneeds + '</additionalneeds>\\n';\n    }\n    xml += '</booking>';\n    return xml;\n}\n\n// pm.sendRequest возвращает Promise, если не пердан callback.\nfunction sendRequestAsync(requestConfig) {\n    return pm.sendRequest(requestConfig);\n}\n\n// Получает НОВЫЙ токен при каждом вызове.\nfunction getFreshToken(username, password) {\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/auth',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json' },\n        body: {\n            mode: 'raw',\n            raw: JSON.stringify({\n                username: username || pm.collectionVariables.get('validUsername'),\n                password: password || pm.collectionVariables.get('validPassword')\n            })\n        }\n    }).then(function (res) {\n        var json = res.json();\n        return json.token;\n    });\n}\n\n// Создаёт НОВУЮ запись booking при каждом вызове.\nfunction createFreshBooking(overrides) {\n    var bodyObj = buildBookingObject(overrides);\n    return sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking',\n        method: 'POST',\n        header: { 'Content-Type': 'application/json', 'Accept': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify(bodyObj) }\n    }).then(function (res) {\n        var json = res.json();\n        return { id: json.bookingid, body: bodyObj, response: res, raw: json };\n    });\n}\n\n(async function () {\n    // TC55: полное обновление всех полей -> 200, тело ответа содержит все изменённые параметры\n    pm.test('При запросе Patch на эндпоинт /booking/id с валидным id, со всеми параметрами записи booking в JSON в body возвращается ответ 200 и запись в теле ответа со всеми измененными параметрами записи', function () {\n        pm.response.to.have.status(200);\n        var sentBody = JSON.parse(pm.variables.get('patchBodyJson'));\n        pm.expect(pm.response.json()).to.eql(sentBody);\n    });\n\n    // Хелпер: частичное обновление одного поля. Токен и запись - свои на каждый вызов.\n    async function expectPartialUpdate(summary, fieldName, value, checkFn) {\n        var token = await getFreshToken();\n        var created = await createFreshBooking();\n        var body = {};\n        body[fieldName] = value;\n        var res = await sendRequestAsync({\n            url: pm.collectionVariables.get('baseUrl') + '/booking/' + created.id,\n            method: 'PATCH',\n            header: { 'Content-Type': 'application/json', Cookie: 'token=' + token },\n            body: { mode: 'raw', raw: JSON.stringify(body) }\n        });\n        pm.test(summary, function () {\n            pm.expect(res.code).to.eql(200);\n            checkFn(res.json());\n        });\n    }\n\n    // TC56\n    var newFirstname = randomFirstName();\n    await expectPartialUpdate('При запросе Patch на эндпоинт /booking/id с валидным id, только с параметром firstname в JSON в body возвращается ответ 200 и запись в теле ответа, где значение firstname изменено', 'firstname', newFirstname, function (json) {\n        pm.expect(json.firstname).to.eql(newFirstname);\n    });\n\n    // TC57\n    var newLastname = randomLastName();\n    await expectPartialUpdate('При запросе Patch на эндпоинт /booking/id с валидным id, только с параметром lastname в JSON в body возвращается ответ 200 и запись в теле ответа, где значение lastname изменено', 'lastname', newLastname, function (json) {\n        pm.expect(json.lastname).to.eql(newLastname);\n    });\n\n    // TC58\n    var newPrice = randomTotalPrice();\n    await expectPartialUpdate('При запросе Patch на эндпоинт /booking/id с валидным id, только с параметром totalprice в JSON в body возвращается ответ 200 и запись в теле ответа, где значение totalprice изменено', 'totalprice', newPrice, function (json) {\n        pm.expect(json.totalprice).to.eql(newPrice);\n    });\n\n    // TC59\n    var newDeposit = randomDepositPaid();\n    await expectPartialUpdate('При запросе Patch на эндпоинт /booking/id с валидным id, только с параметром depositpaid в JSON в body возвращается ответ 200 и запись в теле ответа, где значение depositpaid изменено', 'depositpaid', newDeposit, function (json) {\n        pm.expect(json.depositpaid).to.eql(newDeposit);\n    });\n\n    // TC60\n    var newDates = randomBookingDates();\n    await expectPartialUpdate('При запросе Patch на эндпоинт /booking/id с валидным id, только с параметром bookingdates в JSON в body возвращается ответ 200 и запись в теле ответа, где значение bookingdates изменено', 'bookingdates', newDates, function (json) {\n        pm.expect(json.bookingdates.checkin).to.eql(newDates.checkin);\n        pm.expect(json.bookingdates.checkout).to.eql(newDates.checkout);\n    });\n\n    // TC61\n    var newNeeds = randomAdditionalNeeds();\n    await expectPartialUpdate('При запросе Patch на эндпоинт /booking/id с валидным id, только с параметром additionalneeds в JSON в body возвращается ответ 200 и запись в теле ответа, где значение additionalneeds изменено', 'additionalneeds', newNeeds, function (json) {\n        pm.expect(json.additionalneeds).to.eql(newNeeds);\n    });\n\n    // TC62: невалидный (несуществующий) id -> 400\n    var tokenTc62 = await getFreshToken();\n    var resInvalidId = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking/' + randomBigId(),\n        method: 'PATCH',\n        header: { 'Content-Type': 'application/json', Cookie: 'token=' + tokenTc62 },\n        body: { mode: 'raw', raw: JSON.stringify({ firstname: randomFirstName() }) }\n    });\n    pm.test('При запросе Patch на эндпоинт /booking/id с НЕвалидным id возвращается ответ с кодом 400 Bad request', function () {\n        pm.expect(resInvalidId.code).to.eql(400);\n    });\n\n    // TC63: несуществующий параметр в body -> 400\n    var tokenTc63 = await getFreshToken();\n    var createdTc63 = await createFreshBooking();\n    var resUnknownParam = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking/' + createdTc63.id,\n        method: 'PATCH',\n        header: { 'Content-Type': 'application/json', Cookie: 'token=' + tokenTc63 },\n        body: { mode: 'raw', raw: JSON.stringify({ 'Wrong param': 'Value' }) }\n    });\n    pm.test('При запросе Patch на эндпоинт /booking/id с валидным id, с несуществующим параметром в JSON в body возвращается ответ 400 Bad request', function () {\n        pm.expect(resUnknownParam.code).to.eql(400);\n    });\n\n    // TC64: без токена -> 403\n    var createdTc64 = await createFreshBooking();\n    var resNoToken = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking/' + createdTc64.id,\n        method: 'PATCH',\n        header: { 'Content-Type': 'application/json' },\n        body: { mode: 'raw', raw: JSON.stringify({ firstname: randomFirstName() }) }\n    });\n    pm.test('При запросе Patch на эндпоинт /booking/id с валидным id, с валидным JSON в body БЕЗ токена возвращается ответ с кодом 403 Forbidden', function () {\n        pm.expect(resNoToken.code).to.eql(403);\n    });\n\n    // TC65: невалидный токен -> 403\n    var createdTc65 = await createFreshBooking();\n    var resBadToken = await sendRequestAsync({\n        url: pm.collectionVariables.get('baseUrl') + '/booking/' + createdTc65.id,\n        method: 'PATCH',\n        header: { 'Content-Type': 'application/json', Cookie: 'token=' + randomInvalidToken() },\n        body: { mode: 'raw', raw: JSON.stringify({ firstname: randomFirstName() }) }\n    });\n    pm.test('При запросе Patch на эндпоинт /booking/id с валидным id, с валидным JSON в body, но с невалидным токеном возвращается ответ с кодом 403 Forbidden', function () {\n        pm.expect(resBadToken.code).to.eql(403);\n    });\n})();"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Cookie",
+            "value": "token={{patchToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{patchBodyJson}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/booking/{{patchBookingId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "booking",
+            "{{patchBookingId}}"
+          ]
+        },
+        "description": "Токен, id записи и тело запроса генерируются динамически в Pre-request Script. Все 11 тест-кейсов по /booking/:id PATCH (TC55-TC65) реализованы во вкладке Tests."
+      },
+      "response": []
+    },
+    {
+      "name": "Booking - DeleteBooking",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ========================= ОБЩИЕ ХЕЛПЕРЫ (Collection Pre-request Script) =========================",
+              "// Эти функции доступны в Pre-request script и Tests script КАЖДОГО запроса,",
+              "// так как Postman выполняет их в одном JS-контексте для одного вызова запроса.",
+              "",
+              "function randInt(min, max) {",
+              "    return Math.floor(Math.random() * (max - min + 1)) + min;",
+              "}",
+              "",
+              "function pick(arr) {",
+              "    return arr[randInt(0, arr.length - 1)];",
+              "}",
+              "",
+              "function randomString(length) {",
+              "    var chars = 'abcdefghijklmnopqrstuvwxyz';",
+              "    var s = '';",
+              "    for (var i = 0; i < length; i++) {",
+              "        s += chars[randInt(0, chars.length - 1)];",
+              "    }",
+              "    return s;",
+              "}",
+              "",
+              "function randomFirstName() {",
+              "    var names = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Linda', 'Michael', 'Barbara', 'David', 'Elizabeth'];",
+              "    return pick(names) + '_' + randomString(5);",
+              "}",
+              "",
+              "function randomLastName() {",
+              "    var names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];",
+              "    return pick(names) + '_' + randomString(5);",
+              "}",
+              "",
+              "function randomTotalPrice() {",
+              "    return randInt(10, 2000);",
+              "}",
+              "",
+              "function randomDepositPaid() {",
+              "    return Math.random() < 0.5;",
+              "}",
+              "",
+              "function pad(n) {",
+              "    return n < 10 ? '0' + n : '' + n;",
+              "}",
+              "",
+              "// Возвращает дату в формате YYYY-MM-DD, смещённую от сегодняшней на случайное",
+              "// число дней в диапазоне [startOffsetDays, endOffsetDays].",
+              "function randomDate(startOffsetDays, endOffsetDays) {",
+              "    var base = new Date();",
+              "    var offset = randInt(startOffsetDays, endOffsetDays);",
+              "    base.setDate(base.getDate() + offset);",
+              "    return base.getFullYear() + '-' + pad(base.getMonth() + 1) + '-' + pad(base.getDate());",
+              "}",
+              "",
+              "function randomBookingDates() {",
+              "    var checkin = randomDate(1, 30);",
+              "    var checkout = randomDate(31, 90);",
+              "    return { checkin: checkin, checkout: checkout };",
+              "}",
+              "",
+              "function randomAdditionalNeeds() {",
+              "    return pick(['Breakfast', 'Dinner', 'Lunch', 'Late checkout', 'Extra towels', 'Parking']);",
+              "}",
+              "",
+              "function randomInvalidToken() {",
+              "    return randomString(15) + randomString(5);",
+              "}",
+              "",
+              "function randomBigId() {",
+              "    return randInt(900000000000, 999999999999);",
+              "}",
+              "",
+              "// Строит динамическое валидное тело Booking со случайными данными.",
+              "// overrides позволяет подменить/удалить конкретные поля под конкретный тест-кейс:",
+              "//   { field: VALUE }        -> заменить значение поля",
+              "//   { field: 'DELETE_FIELD__' }   -> удалить поле целиком",
+              "//   { bookingdates: {...} } -> примешать/удалить вложенные поля checkin/checkout",
+              "function buildBookingObject(overrides) {",
+              "    var dates = randomBookingDates();",
+              "    var obj = {",
+              "        firstname: randomFirstName(),",
+              "        lastname: randomLastName(),",
+              "        totalprice: randomTotalPrice(),",
+              "        depositpaid: randomDepositPaid(),",
+              "        bookingdates: { checkin: dates.checkin, checkout: dates.checkout },",
+              "        additionalneeds: randomAdditionalNeeds()",
+              "    };",
+              "    if (overrides) {",
+              "        Object.keys(overrides).forEach(function (key) {",
+              "            if (overrides[key] === 'DELETE_FIELD__') {",
+              "                delete obj[key];",
+              "            } else if (key === 'bookingdates' && typeof overrides[key] === 'object' && overrides[key] !== null) {",
+              "                var merged = Object.assign({}, obj.bookingdates);",
+              "                Object.keys(overrides[key]).forEach(function (subKey) {",
+              "                    if (overrides[key][subKey] === 'DELETE_FIELD__') {",
+              "                        delete merged[subKey];",
+              "                    } else {",
+              "                        merged[subKey] = overrides[key][subKey];",
+              "                    }",
+              "                });",
+              "                obj.bookingdates = merged;",
+              "            } else {",
+              "                obj[key] = overrides[key];",
+              "            }",
+              "        });",
+              "    }",
+              "    return obj;",
+              "}",
+              "",
+              "function buildBookingXml(obj) {",
+              "    var xml = '<booking>\\n';",
+              "    xml += '  <firstname>' + obj.firstname + '</firstname>\\n';",
+              "    xml += '  <lastname>' + obj.lastname + '</lastname>\\n';",
+              "    xml += '  <totalprice>' + obj.totalprice + '</totalprice>\\n';",
+              "    xml += '  <depositpaid>' + obj.depositpaid + '</depositpaid>\\n';",
+              "    xml += '  <bookingdates>\\n';",
+              "    xml += '    <checkin>' + obj.bookingdates.checkin + '</checkin>\\n';",
+              "    xml += '    <checkout>' + obj.bookingdates.checkout + '</checkout>\\n';",
+              "    xml += '  </bookingdates>\\n';",
+              "    if (obj.additionalneeds !== undefined) {",
+              "        xml += '  <additionalneeds>' + obj.additionalneeds + '</additionalneeds>\\n';",
+              "    }",
+              "    xml += '</booking>';",
+              "    return xml;",
+              "}",
+              "",
+              "// pm.sendRequest возвращает Promise, если не передан callback (Postman v10+).",
+              "function sendRequestAsync(requestConfig) {",
+              "    return pm.sendRequest(requestConfig);",
+              "}",
+              "",
+              "// Получает НОВЫЙ токен при каждом вызове (требование независимости тестов).",
+              "function getFreshToken(username, password) {",
+              "    return sendRequestAsync({",
+              "        url: pm.collectionVariables.get('baseUrl') + '/auth',",
+              "        method: 'POST',",
+              "        header: { 'Content-Type': 'application/json' },",
+              "        body: {",
+              "            mode: 'raw',",
+              "            raw: JSON.stringify({",
+              "                username: username || pm.collectionVariables.get('validUsername'),",
+              "                password: password || pm.collectionVariables.get('validPassword')",
+              "            })",
+              "        }",
+              "    }).then(function (res) {",
+              "        var json = res.json();",
+              "        return json.token;",
+              "    });",
+              "}",
+              "",
+              "// Создаёт НОВУЮ запись booking при каждом вызове (требование независимости тестов).",
+              "function createFreshBooking(overrides) {",
+              "    var bodyObj = buildBookingObject(overrides);",
+              "    return sendRequestAsync({",
+              "        url: pm.collectionVariables.get('baseUrl') + '/booking',",
+              "        method: 'POST',",
+              "        header: { 'Content-Type': 'application/json', 'Accept': 'application/json' },",
+              "        body: { mode: 'raw', raw: JSON.stringify(bodyObj) }",
+              "    }).then(function (res) {",
+              "        var json = res.json();",
+              "        return { id: json.bookingid, body: bodyObj, response: res, raw: json };",
+              "    });",
+              "}",
+              "",
+              "// Предусловие TC66: получить токен и создать новую запись booking.",
+              "(async function () {",
+              "    try {",
+              "        var token = await getFreshToken();",
+              "        var created = await createFreshBooking();",
+              "        pm.variables.set('deleteToken', token);",
+              "        pm.variables.set('deleteBookingId', created.id);",
+              "    } catch (e) {",
+              "        console.log('[DeleteBooking pre-request] Ошибка подготовки: ' + e.message);",
+              "    }",
+              "})();"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ========================= ОБЩИЕ ХЕЛПЕРЫ (Collection Pre-request Script) =========================",
+              "// Эти функции доступны в Pre-request script и Tests script КАЖДОГО запроса,",
+              "// так как Postman выполняет их в одном JS-контексте для одного вызова запроса.",
+              "",
+              "function randInt(min, max) {",
+              "    return Math.floor(Math.random() * (max - min + 1)) + min;",
+              "}",
+              "",
+              "function pick(arr) {",
+              "    return arr[randInt(0, arr.length - 1)];",
+              "}",
+              "",
+              "function randomString(length) {",
+              "    var chars = 'abcdefghijklmnopqrstuvwxyz';",
+              "    var s = '';",
+              "    for (var i = 0; i < length; i++) {",
+              "        s += chars[randInt(0, chars.length - 1)];",
+              "    }",
+              "    return s;",
+              "}",
+              "",
+              "function randomFirstName() {",
+              "    var names = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Linda', 'Michael', 'Barbara', 'David', 'Elizabeth'];",
+              "    return pick(names) + '_' + randomString(5);",
+              "}",
+              "",
+              "function randomLastName() {",
+              "    var names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];",
+              "    return pick(names) + '_' + randomString(5);",
+              "}",
+              "",
+              "function randomTotalPrice() {",
+              "    return randInt(10, 2000);",
+              "}",
+              "",
+              "function randomDepositPaid() {",
+              "    return Math.random() < 0.5;",
+              "}",
+              "",
+              "function pad(n) {",
+              "    return n < 10 ? '0' + n : '' + n;",
+              "}",
+              "",
+              "// Возвращает дату в формате YYYY-MM-DD, смещённую от сегодняшней на случайное",
+              "// число дней в диапазоне [startOffsetDays, endOffsetDays].",
+              "function randomDate(startOffsetDays, endOffsetDays) {",
+              "    var base = new Date();",
+              "    var offset = randInt(startOffsetDays, endOffsetDays);",
+              "    base.setDate(base.getDate() + offset);",
+              "    return base.getFullYear() + '-' + pad(base.getMonth() + 1) + '-' + pad(base.getDate());",
+              "}",
+              "",
+              "function randomBookingDates() {",
+              "    var checkin = randomDate(1, 30);",
+              "    var checkout = randomDate(31, 90);",
+              "    return { checkin: checkin, checkout: checkout };",
+              "}",
+              "",
+              "function randomAdditionalNeeds() {",
+              "    return pick(['Breakfast', 'Dinner', 'Lunch', 'Late checkout', 'Extra towels', 'Parking']);",
+              "}",
+              "",
+              "function randomInvalidToken() {",
+              "    return randomString(15) + randomString(5);",
+              "}",
+              "",
+              "function randomBigId() {",
+              "    return randInt(900000000000, 999999999999);",
+              "}",
+              "",
+              "// Строит динамическое валидное тело Booking со случайными данными.",
+              "// overrides позволяет подменить/удалить конкретные поля под конкретный тест-кейс:",
+              "//   { field: VALUE }        -> заменить значение поля",
+              "//   { field: 'DELETE_FIELD__' }   -> удалить поле целиком",
+              "//   { bookingdates: {...} } -> примешать/удалить вложенные поля checkin/checkout",
+              "function buildBookingObject(overrides) {",
+              "    var dates = randomBookingDates();",
+              "    var obj = {",
+              "        firstname: randomFirstName(),",
+              "        lastname: randomLastName(),",
+              "        totalprice: randomTotalPrice(),",
+              "        depositpaid: randomDepositPaid(),",
+              "        bookingdates: { checkin: dates.checkin, checkout: dates.checkout },",
+              "        additionalneeds: randomAdditionalNeeds()",
+              "    };",
+              "    if (overrides) {",
+              "        Object.keys(overrides).forEach(function (key) {",
+              "            if (overrides[key] === 'DELETE_FIELD__') {",
+              "                delete obj[key];",
+              "            } else if (key === 'bookingdates' && typeof overrides[key] === 'object' && overrides[key] !== null) {",
+              "                var merged = Object.assign({}, obj.bookingdates);",
+              "                Object.keys(overrides[key]).forEach(function (subKey) {",
+              "                    if (overrides[key][subKey] === 'DELETE_FIELD__') {",
+              "                        delete merged[subKey];",
+              "                    } else {",
+              "                        merged[subKey] = overrides[key][subKey];",
+              "                    }",
+              "                });",
+              "                obj.bookingdates = merged;",
+              "            } else {",
+              "                obj[key] = overrides[key];",
+              "            }",
+              "        });",
+              "    }",
+              "    return obj;",
+              "}",
+              "",
+              "function buildBookingXml(obj) {",
+              "    var xml = '<booking>\\n';",
+              "    xml += '  <firstname>' + obj.firstname + '</firstname>\\n';",
+              "    xml += '  <lastname>' + obj.lastname + '</lastname>\\n';",
+              "    xml += '  <totalprice>' + obj.totalprice + '</totalprice>\\n';",
+              "    xml += '  <depositpaid>' + obj.depositpaid + '</depositpaid>\\n';",
+              "    xml += '  <bookingdates>\\n';",
+              "    xml += '    <checkin>' + obj.bookingdates.checkin + '</checkin>\\n';",
+              "    xml += '    <checkout>' + obj.bookingdates.checkout + '</checkout>\\n';",
+              "    xml += '  </bookingdates>\\n';",
+              "    if (obj.additionalneeds !== undefined) {",
+              "        xml += '  <additionalneeds>' + obj.additionalneeds + '</additionalneeds>\\n';",
+              "    }",
+              "    xml += '</booking>';",
+              "    return xml;",
+              "}",
+              "",
+              "// pm.sendRequest возвращает Promise, если не передан callback (Postman v10+).",
+              "function sendRequestAsync(requestConfig) {",
+              "    return pm.sendRequest(requestConfig);",
+              "}",
+              "",
+              "// Получает НОВЫЙ токен при каждом вызове (требование независимости тестов).",
+              "function getFreshToken(username, password) {",
+              "    return sendRequestAsync({",
+              "        url: pm.collectionVariables.get('baseUrl') + '/auth',",
+              "        method: 'POST',",
+              "        header: { 'Content-Type': 'application/json' },",
+              "        body: {",
+              "            mode: 'raw',",
+              "            raw: JSON.stringify({",
+              "                username: username || pm.collectionVariables.get('validUsername'),",
+              "                password: password || pm.collectionVariables.get('validPassword')",
+              "            })",
+              "        }",
+              "    }).then(function (res) {",
+              "        var json = res.json();",
+              "        return json.token;",
+              "    });",
+              "}",
+              "",
+              "// Создаёт НОВУЮ запись booking при каждом вызове (требование независимости тестов).",
+              "function createFreshBooking(overrides) {",
+              "    var bodyObj = buildBookingObject(overrides);",
+              "    return sendRequestAsync({",
+              "        url: pm.collectionVariables.get('baseUrl') + '/booking',",
+              "        method: 'POST',",
+              "        header: { 'Content-Type': 'application/json', 'Accept': 'application/json' },",
+              "        body: { mode: 'raw', raw: JSON.stringify(bodyObj) }",
+              "    }).then(function (res) {",
+              "        var json = res.json();",
+              "        return { id: json.bookingid, body: bodyObj, response: res, raw: json };",
+              "    });",
+              "}",
+              "",
+              "(async function () {",
+              "    // TC66: валидный id + валидный токен -> 204 No Content, без тела ответа (ответ основного запроса)",
+              "    pm.test('При запросе Delete на эндпоинт /booking/id с валидным id возвращается ответ с кодом 204 (No content) без тела ответа', function () {",
+              "        pm.response.to.have.status(204);",
+              "        pm.expect(pm.response.text()).to.eql('');",
+              "    });",
+              "",
+              "    // TC67: без токена -> 403 (своя новая запись)",
+              "    var createdNoToken = await createFreshBooking();",
+              "    var resNoToken = await sendRequestAsync({",
+              "        url: pm.collectionVariables.get('baseUrl') + '/booking/' + createdNoToken.id,",
+              "        method: 'DELETE'",
+              "    });",
+              "    pm.test('При запросе Delete на эндпоинт /booking/id с валидным id, но БЕЗ токена возвращается ответ с кодом 403 Forbidden', function () {",
+              "        pm.expect(resNoToken.code).to.eql(403);",
+              "    });",
+              "",
+              "    // TC68 (первый в файле): невалидный токен -> 403 (своя новая запись)",
+              "    var createdBadToken = await createFreshBooking();",
+              "    var resBadToken = await sendRequestAsync({",
+              "        url: pm.collectionVariables.get('baseUrl') + '/booking/' + createdBadToken.id,",
+              "        method: 'DELETE',",
+              "        header: { Cookie: 'token=' + randomInvalidToken() }",
+              "    });",
+              "    pm.test('При запросе Delete на эндпоинт /booking/id с валидным id, но с невалидным токеном возвращается ответ с кодом 403 Forbidden', function () {",
+              "        pm.expect(resBadToken.code).to.eql(403);",
+              "    });",
+              "",
+              "    // TC69: после успешного удаления записи GET по её id должен вернуть 404 Not found",
+              "    // (своя новая запись, свой новый токен, удаление и проверка выполняются внутри этого же теста)",
+              "    var tokenTc69 = await getFreshToken();",
+              "    var createdTc69 = await createFreshBooking();",
+              "    var resDeleteTc69 = await sendRequestAsync({",
+              "        url: pm.collectionVariables.get('baseUrl') + '/booking/' + createdTc69.id,",
+              "        method: 'DELETE',",
+              "        header: { Cookie: 'token=' + tokenTc69 }",
+              "    });",
+              "    var resGetAfterDeleteTc69 = await sendRequestAsync({",
+              "        url: pm.collectionVariables.get('baseUrl') + '/booking/' + createdTc69.id,",
+              "        method: 'GET',",
+              "        header: { Accept: 'application/json' }",
+              "    });",
+              "    pm.test('После запроса Delete на эндпоинт /booking/id с валидным id, Get запрос на эндпоинт  /booking/id возвращает 404 Not found', function () {",
+              "        pm.expect(resDeleteTc69.code).to.eql(204);",
+              "        pm.expect(resGetAfterDeleteTc69.code).to.eql(404);",
+              "    });",
+              "})();"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "token={{deleteToken}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/booking/{{deleteBookingId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "booking",
+            "{{deleteBookingId}}"
+          ]
+        },
+        "description": "Токен и id записи генерируются динамически в Pre-request Script. Все 4 тест-кейса по /booking/:id DELETE (TC66-TC69, включая проверку GET 404 после удаления) реализованы во вкладке Tests."
+      },
+      "response": []
+    },
+    {
+      "name": "Ping - HealthCheck",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// TC70 (в файле Get на /ping): /ping -> 200 OK",
+              "pm.test('При запросе Get на эндпоинт /ping возвращается ответ с кодом 200 OK', function () {",
+              "    pm.response.to.have.status(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/ping",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "ping"
+          ]
+        },
+        "description": "Тест-кейс по /ping (последняя строка файла, пронумерована автором как №68, дублируя номер DeleteBooking)."
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://restful-booker.herokuapp.com"
+    },
+    {
+      "key": "baseUrlHttp",
+      "value": "http://restful-booker.herokuapp.com"
+    },
+    {
+      "key": "validUsername",
+      "value": "admin"
+    },
+    {
+      "key": "validPassword",
+      "value": "password123"
+    }
+  ]
+}
